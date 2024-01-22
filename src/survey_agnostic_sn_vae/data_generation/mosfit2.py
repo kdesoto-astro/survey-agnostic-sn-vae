@@ -58,7 +58,8 @@ def generate_LCs_from_model(
             max_time=1000.0,
             iterations=0,
             write=True,
-            output_path=output_path
+            output_path=output_path,
+            num_walkers=num
         )
         
     

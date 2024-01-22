@@ -1,5 +1,5 @@
 # some product files
-*/slsn_*.json
+docs/notebooks/products/slsn_*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

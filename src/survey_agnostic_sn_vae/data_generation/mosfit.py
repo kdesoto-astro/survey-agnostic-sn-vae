@@ -2,10 +2,13 @@
 
 import mosfit
 import numpy as np
-import objects
+from typing import List
+
+from .objects import *
 
 def generate_LCs_from_model(
     model_name: str,
+    survey_list: List[Survey],
     num=1000
 ) -> list[LightCurve]:
     """Generate clean light curves from a MOSFIT
@@ -25,35 +28,36 @@ def generate_LCs_from_model(
         The set of generated light curves.
     """
     model = mosfit.model.Model(model=model_name)
-    # Generate a random input vector of free parameters.
-    x = np.random.rand(my_model.get_num_free_parameters())
 
-    # Produce model output.
-    outputs = my_model.run(x)
-    print(
-        'Keys in output: `{}`'.format(
-            ', '.join(list(outputs.keys()))
+    lcs = []
+    
+    for s in survey_list:
+        s_name = s.name
+        s_bands = s.bands
+        s_times = s.generate_sample_times(20)
+        
+        fitter = mosfit.Fitter()
+        
+        data = fitter.generate_dummy_data(
+            s.name,
+            time_list=s_times,
+            band_list=s.bands,
+            band_instruments=[s.name,],
         )
-    )
+        
+        model.load_data(
+            data,
+            band_list=s.bands,
+            band_instruments=[s.name,]
+        )
+        # Generate a random input vector of free parameters.
+        x = np.random.rand(model.get_num_free_parameters())
 
+        # Produce model output.
+        outputs = model.run(x)
+        print(
+            'Keys in output: `{}`'.format(
+                ', '.join(list(outputs.keys()))
+            )
+        )
 
-def extract_survey_observables(
-    lightcurve: LightCurve,
-    survey_list: SurveyList,
-) -> FilteredLightCurveSet:
-    """Extract light curves as observed through
-    each survey in survey_list.
-
-    Parameters
-    ----------
-    lightcurve : LightCurve
-        modeled MOSFIT light curve object
-    survey_list : SurveyList
-        The Surveys to return observables for.
-
-    Returns
-    -------
-    FilteredLightCurves
-        Collection of observed light curves for each survey.
-    """
-    pass

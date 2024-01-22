@@ -1,0 +1,10 @@
+# Changes here will be overwritten by Copier
+_commit: v1.4.6
+_src_path: gh:lincc-frameworks/python-project-template
+author_email: kaylee.de_soto@cfa.harvard.edu
+author_name: Kaylee de Soto & Ana Sofia Uzsoy
+custom_install: false
+package_name: survey_agnostic_sn_vae
+project_license: MIT
+project_name: survey-agnostic-sn-vae
+project_organization: vtdagroup

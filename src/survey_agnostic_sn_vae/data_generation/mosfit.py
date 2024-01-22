@@ -1,6 +1,7 @@
 """Module to generate the MOSFIT light curves for VAE training."""
 
 import mosfit
+import os
 import numpy as np
 from typing import List
 from .objects import *
@@ -26,6 +27,15 @@ def generate_LCs_from_model(
     LightCurveSet
         The set of generated light curves.
     """
+    orig_path = os.getcwd()
+    
+    mosfit_path = os.path.dirname(
+        os.path.realpath(mosfit.__file__)
+    )
+    
+    print("Switching to MOSFIT path: %s" % mosfit_path)
+    os.chdir(mosfit_path)
+    
     model = mosfit.model.Model(model=model_name)
 
     lcs = []
@@ -58,3 +68,6 @@ def generate_LCs_from_model(
                 ', '.join(list(outputs.keys()))
             )
         )
+    
+    print("Switching back to original working directory")
+    os.chdir(orig_path)

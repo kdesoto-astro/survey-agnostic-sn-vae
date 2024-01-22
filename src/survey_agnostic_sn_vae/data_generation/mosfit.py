@@ -3,14 +3,13 @@
 import mosfit
 import numpy as np
 from typing import List
-
 from .objects import *
 
 def generate_LCs_from_model(
     model_name: str,
     survey_list: List[Survey],
     num=1000
-) -> list[LightCurve]:
+) -> List[LightCurve]:
     """Generate clean light curves from a MOSFIT
     model.
 
@@ -44,7 +43,6 @@ def generate_LCs_from_model(
             band_list=s.bands,
             band_instruments=[s.name,],
         )
-        
         model.load_data(
             data,
             band_list=s.bands,
@@ -60,4 +58,3 @@ def generate_LCs_from_model(
                 ', '.join(list(outputs.keys()))
             )
         )
-

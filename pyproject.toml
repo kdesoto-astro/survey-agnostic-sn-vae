@@ -15,7 +15,13 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
+    "questionary",
+    "prompt-toolkit",
     "ipykernel", # Support for Jupyter notebooks
+    "numpy",
+    "mosfit",
+    "astrocats",
+    "mpi4py"
 ]
 
 [project.urls]

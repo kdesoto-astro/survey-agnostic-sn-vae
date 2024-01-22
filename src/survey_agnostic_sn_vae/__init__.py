@@ -1,3 +1,3 @@
-from .example_module import greetings, meaning
+from .data_generation.mosfit import *
 
-__all__ = ["greetings", "meaning"]
+#__all__ = ["greetings", "meaning"]

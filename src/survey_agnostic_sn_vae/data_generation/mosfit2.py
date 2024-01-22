@@ -4,12 +4,13 @@ import mosfit
 import os
 import numpy as np
 from typing import List
-from objects import *
+from .objects import *
 
 def generate_LCs_from_model(
     model_name: str,
     survey_list: List[Survey],
-    num=1000
+    num=1000,
+    output_path=None
 ) -> List[LightCurve]:
     """Generate clean light curves from a MOSFIT
     model.
@@ -28,6 +29,8 @@ def generate_LCs_from_model(
         The set of generated light curves.
     """
     orig_path = os.getcwd()
+    if output_path is None:
+        output_path = orig_path
     
     mosfit_path = os.path.dirname(
         os.path.realpath(mosfit.__file__)
@@ -47,27 +50,17 @@ def generate_LCs_from_model(
         
         fitter = mosfit.fitter.Fitter()
         
-        data = fitter.generate_dummy_data(
-            s.name,
+        fitter.fit_events(
+            models=[model_name,],
             time_list=s_times,
             band_list=s.bands,
             band_instruments=[s.name,],
+            max_time=1000.0,
+            iterations=0,
+            write=True,
+            output_path=output_path
         )
-        model.load_data(
-            data,
-            band_list=s.bands,
-            band_instruments=[s.name,]
-        )
-        # Generate a random input vector of free parameters.
-        x = np.random.rand(model.get_num_free_parameters())
-
-        # Produce model output.
-        outputs = model.run(x)
-        print(
-            'Keys in output: `{}`'.format(
-                ', '.join(list(outputs.keys()))
-            )
-        )
+        
     
     print("Switching back to original working directory")
     os.chdir(orig_path)

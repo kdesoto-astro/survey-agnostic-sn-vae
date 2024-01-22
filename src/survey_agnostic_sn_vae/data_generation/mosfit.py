@@ -2,12 +2,14 @@
 
 import mosfit
 import numpy as np
-import objects
+from typing import List
+from .objects import *
 
 def generate_LCs_from_model(
     model_name: str,
+    survey_list: List[Survey]
     num=1000
-) -> list[LightCurve]:
+) -> List[LightCurve]:
     """Generate clean light curves from a MOSFIT
     model.
 
@@ -35,25 +37,3 @@ def generate_LCs_from_model(
             ', '.join(list(outputs.keys()))
         )
     )
-
-
-def extract_survey_observables(
-    lightcurve: LightCurve,
-    survey_list: SurveyList,
-) -> FilteredLightCurveSet:
-    """Extract light curves as observed through
-    each survey in survey_list.
-
-    Parameters
-    ----------
-    lightcurve : LightCurve
-        modeled MOSFIT light curve object
-    survey_list : SurveyList
-        The Surveys to return observables for.
-
-    Returns
-    -------
-    FilteredLightCurves
-        Collection of observed light curves for each survey.
-    """
-    pass

@@ -16,7 +16,7 @@ class LightCurve:
     def __init__(self, timepoints, flux, flux_err, survey):
         self.bands = flux.keys()
         self.timepoints = timepoints
-        if flux.keys() !== flux_err.keys():
+        if flux.keys() != flux_err.keys():
             raise ValueError("Make sure flux and flux err have the same bands")
         self.flux = flux
         self.flux_err = flux_err

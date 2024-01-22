@@ -55,13 +55,22 @@ def generate_LCs_from_model(
             time_list=s_times,
             band_list=s.bands,
             band_instruments=[s.name,],
-            max_time=1000.0,
+            max_time=200.0,
             iterations=0,
             write=True,
             output_path=output_path,
             num_walkers=num
         )
         
-    
+        t, m, merr, b = extract_photometry(
+            os.path.join(output_path, "walkers.json")
+        )
+        
+        lcs.append(
+            LightCurve.from_arrays(t, m, merr, b, s)
+        )     
+        
     print("Switching back to original working directory")
     os.chdir(orig_path)
+    
+    return lcs

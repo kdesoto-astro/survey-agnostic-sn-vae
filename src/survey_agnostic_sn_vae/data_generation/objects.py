@@ -22,6 +22,47 @@ class LightCurve:
         self.flux_err = flux_err
         self.survey = survey
         
+    @class_method
+    def from_arrays(cls, times, fluxes, flux_errors, bands, survey):
+        """Generate LightCurve object dictionaries from
+        equal-dimensioned arrays."""
+        if not (
+            len(times) == len(fluxes) == len(flux_errors) == len(bands)
+        ):
+            raise ValueError("Input arrays must all be the same length.")
+                    
+        times = np.asarray(times)
+        fluxes = np.asarray(fluxes)
+        flux_errors = np.asarray(flux_errors)
+        bands = np.asarray(bands)
+        
+        sort_idxs = np.argsort(times)
+        
+        times_sorted = times[sort_idxs]
+        fluxes_sorted = fluxes[sort_idxs]
+        flux_errors_sorted = flux_errors[sort_idxs]
+        bands_sorted = bands[sort_idxs]
+        
+        # TODO: this currently assumes every band is sampled for each
+        # timestamp - add method for band interpolation
+        
+        f_dict = {}
+        f_err_dict = {}
+        
+        t_unique = np.unique(times_sorted)
+        for b in np.unique(bands):
+            band_idxs = bands_sorted == b
+            fluxes_b = fluxes_sorted[band_idxs]
+            flux_errors_b = flux_errors_sorted[band_idxs]
+            assert len(fluxes_b) == len(flux_errors_b)
+            assert len(fluxes_b) == len(t_unique)
+            
+            f_dict[b] = fluxes_b
+            f_err_dict[b] = flux_errors_b
+        
+        return cls(t_unique, f_dict, f_err_dict, survey)
+            
+            
     def find_max_flux(self, bands = None):
         if bands == None:
             bands = self.bands

@@ -35,7 +35,7 @@ def generate_LCs_from_model(
         s_bands = s.bands
         s_times = s.generate_sample_times(20)
         
-        fitter = mosfit.Fitter()
+        fitter = mosfit.fitter.Fitter()
         
         data = fitter.generate_dummy_data(
             s.name,

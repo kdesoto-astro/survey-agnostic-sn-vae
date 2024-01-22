@@ -32,6 +32,9 @@ class LightCurve:
             max_times[band] = self.timepoints[max_index]
             max_fluxes[band] = self.flux[band][max_index]
         return max_times, max_fluxes
+    
+    def get_encoding_format(self):
+        pass
             
         
         

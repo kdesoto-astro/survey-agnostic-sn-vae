@@ -4,7 +4,7 @@ import mosfit
 import os
 import numpy as np
 from typing import List
-from .objects import *
+from objects import *
 
 def generate_LCs_from_model(
     model_name: str,

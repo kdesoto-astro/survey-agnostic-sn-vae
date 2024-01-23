@@ -41,36 +41,37 @@ def generate_LCs_from_model(
     print("Switching to MOSFIT path: %s" % mosfit_path)
     os.chdir(mosfit_path)
     
-    fitter = mosfit.fitter.Fitter()
-    
-    # generate initial LCs/model params
-    fitter.fit_events(
-        models=[model_type,],
-        max_time=1000.0,
-        iterations=0,
-        write=True,
-        output_path=output_path,
-        num_walkers=num,
-    )
-    file_loc = os.path.join(
-        output_path,
-        f"products/{model_type}.json"
-    )
-    data = open_walkers_file(file_loc)
-    transients = generate_transients_from_samples(data)
-    
-    for i, s in enumerate(survey_list):
-        for t in transients:
-            fitter._event_name = i
-            t.generate_lightcurve(
-                s, output_path,
-                fitter=fitter
-            )
+    with suppress_stdout():
+        fitter = mosfit.fitter.Fitter()
+
+        # generate initial LCs/model params
+        fitter.fit_events(
+            models=[model_type,],
+            max_time=1000.0,
+            iterations=0,
+            write=True,
+            output_path=output_path,
+            num_walkers=num,
+        )
+        file_loc = os.path.join(
+            output_path,
+            f"products/{model_type}.json"
+        )
+        data = open_walkers_file(file_loc)
+        transients = generate_transients_from_samples(data)
+
+        for i, s in enumerate(survey_list):
+            for t in transients:
+                fitter._event_name = i
+                t.generate_lightcurve(
+                    s, output_path,
+                    fitter=fitter
+                )
                 
     print("Switching back to original working directory")
     os.chdir(orig_path)
     
-    return lcs
+    return transients
 
 
 def generate_transients_from_samples(

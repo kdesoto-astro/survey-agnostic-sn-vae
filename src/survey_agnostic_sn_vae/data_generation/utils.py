@@ -15,7 +15,18 @@ def suppress_stdout():
             yield
         finally:
             sys.stdout = old_stdout
+
             
+def convert_mag_to_flux(m, merr, zpt):
+    """Converts apparent magnitude to flux values.
+    """
+    log_f = (zpt - m) / 2.5
+    f = 10**log_f
+    f_err = m_err * f * np.log(10) / 2.5
+    
+    return f, f_err
+
+
 def open_walkers_file(
     walkers_file: str
 ) -> Dict:

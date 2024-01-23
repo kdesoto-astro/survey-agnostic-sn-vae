@@ -72,8 +72,8 @@ def generate_LCs_from_model(
                     output_path, "transients"
                 )
             )
-            #for f in glob.glob(os.path.join(tmp_dir, "*")):
-            #    os.remove(f)
+            for f in glob.glob(os.path.join(tmp_dir, "*")):
+                os.remove(f)
                 
     print("Switching back to original working directory")
     os.chdir(orig_path)

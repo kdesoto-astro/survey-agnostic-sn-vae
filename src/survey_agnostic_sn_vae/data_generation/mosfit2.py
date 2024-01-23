@@ -3,15 +3,16 @@
 import mosfit
 import os
 import numpy as np
-from typing import List
+from typing import List, Dict, Any
 from .objects import *
+from .utils import *
 
 def generate_LCs_from_model(
-    model_name: str,
+    model_type: str,
     survey_list: List[Survey],
     num=1000,
     output_path=None
-) -> List[LightCurve]:
+) -> List[Transient]:
     """Generate clean light curves from a MOSFIT
     model.
 
@@ -25,13 +26,14 @@ def generate_LCs_from_model(
 
     Returns
     ----------
-    LightCurveSet
-        The set of generated light curves.
+    List[Transients]
+        The set of transients generated with associated LCs.
     """
     orig_path = os.getcwd()
     if output_path is None:
         output_path = orig_path
     
+    print(output_path)
     mosfit_path = os.path.dirname(
         os.path.realpath(mosfit.__file__)
     )
@@ -39,38 +41,69 @@ def generate_LCs_from_model(
     print("Switching to MOSFIT path: %s" % mosfit_path)
     os.chdir(mosfit_path)
     
-    model = mosfit.model.Model(model=model_name)
-
-    lcs = []
+    fitter = mosfit.fitter.Fitter()
     
-    for s in survey_list:
-        s_name = s.name
-        s_bands = s.bands
-        s_times = s.generate_sample_times(20)
-        
-        fitter = mosfit.fitter.Fitter()
-        
-        fitter.fit_events(
-            models=[model_name,],
-            time_list=s_times,
-            band_list=s.bands,
-            band_instruments=[s.name,],
-            max_time=200.0,
-            iterations=0,
-            write=True,
-            output_path=output_path,
-            num_walkers=num
-        )
-        
-        t, m, merr, b = extract_photometry(
-            os.path.join(output_path, "walkers.json")
-        )
-        
-        lcs.append(
-            LightCurve.from_arrays(t, m, merr, b, s)
-        )     
-        
+    # generate initial LCs/model params
+    fitter.fit_events(
+        models=[model_type,],
+        max_time=1000.0,
+        iterations=0,
+        write=True,
+        output_path=output_path,
+        num_walkers=num,
+    )
+    file_loc = os.path.join(
+        output_path,
+        f"products/{model_type}.json"
+    )
+    data = open_walkers_file(file_loc)
+    transients = generate_transients_from_samples(data)
+    
+    for i, s in enumerate(survey_list):
+        for t in transients:
+            fitter._event_name = i
+            t.generate_lightcurve(
+                s, output_path,
+                fitter=fitter
+            )
+                
     print("Switching back to original working directory")
     os.chdir(orig_path)
     
     return lcs
+
+
+def generate_transients_from_samples(
+    data : Dict[str, Any]
+) -> List[Transient]:
+    """Generate list of Transient objects from
+    simulated clean LC samples.
+    """
+    realizations = data['models'][0]['realizations']
+    param_dicts = [rn['parameters'] for rn in realizations]
+    param_names = [
+        p for p in list(param_dicts[0].keys()) \
+        if 'value' in param_dicts[0][p]
+    ]
+    model_type = data['name']
+    
+    transients = []
+    for p in param_dicts:
+        model_params = {
+            param: p[param]['value'] for param in param_names
+        }
+        
+        transients.append(
+            Transient(
+                model_type,
+                model_params,
+            )
+        )
+    
+    return transients
+
+
+
+            
+            
+    

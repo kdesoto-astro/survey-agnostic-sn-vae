@@ -5,8 +5,7 @@ from typing import Dict
 import json
 import pickle
 
-# from .utils import *
-from utils import *
+from survey_agnostic_sn_vae.data_generation.utils import *
 
 DEFAULT_FITTER = mosfit.fitter.Fitter()
 
@@ -16,6 +15,19 @@ class Survey:
         self.name = name
         self.bands = bands
         self.cadence = cadence
+    
+        # generate initial LCs/model params
+        fitter.fit_events(
+            models=[],
+            iterations=0,
+            write=False,
+            time_list=[],
+            band_list=self.bands,
+            band_instruments=self.name,
+        )
+        
+        # add photometry from fitter.model
+        self.band_wvs = {}
         
     def generate_sample_times(self, num_points):
         initial_time = -5 + np.random.random_sample() * 10
@@ -112,19 +124,11 @@ class Transient:
             )
             
     @classmethod
-    def load(output_dir, obj_id, model_type):
+    def load(cls, filepath):
         """Load Transient object from pickle file.
         """
-        save_name = os.path.join(
-            output_dir,
-            f"transient_{model_type}_{obj_id}.pickle"
-        )
-        
-        with open(save_name, 'wb') as handle:
-            obj = pickle.load(
-                handle,
-                protocol=pickle.HIGHEST_PROTOCOL
-            )
+        with open(filepath, 'rb') as handle:
+            obj = pickle.load(handle)
             return obj
         
         

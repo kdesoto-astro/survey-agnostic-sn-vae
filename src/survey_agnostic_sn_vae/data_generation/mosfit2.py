@@ -68,7 +68,7 @@ def generate_LCs_from_model(
                     fitter=fitter
                 )
 
-    return transients
+    return transients, fitter
 
 
 def generate_transients_from_samples(

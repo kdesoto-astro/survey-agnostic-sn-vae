@@ -4,8 +4,8 @@ import mosfit
 import os
 import numpy as np
 from typing import List, Dict, Any
-from .objects import *
-from .utils import *
+from objects import *
+from utils import *
 
 def generate_LCs_from_model(
     model_type: str,
@@ -43,6 +43,7 @@ def generate_LCs_from_model(
     
     fitter = mosfit.fitter.Fitter()
     
+    
     # generate initial LCs/model params
     fitter.fit_events(
         models=[model_type,],
@@ -52,6 +53,9 @@ def generate_LCs_from_model(
         output_path=output_path,
         num_walkers=num,
     )
+    
+    
+    
     file_loc = os.path.join(
         output_path,
         f"products/{model_type}.json"
@@ -70,7 +74,7 @@ def generate_LCs_from_model(
     print("Switching back to original working directory")
     os.chdir(orig_path)
     
-    return lcs
+    return transients, fitter
 
 
 def generate_transients_from_samples(

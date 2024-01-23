@@ -5,7 +5,8 @@ from typing import Dict
 import json
 import pickle
 
-from .utils import *
+# from .utils import *
+from utils import *
 
 DEFAULT_FITTER = mosfit.fitter.Fitter()
 
@@ -211,7 +212,6 @@ class LightCurve:
     def get_encoding_format(self):
         pass
             
-        
         
         
         

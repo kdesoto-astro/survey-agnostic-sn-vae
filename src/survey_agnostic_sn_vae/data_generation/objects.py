@@ -15,24 +15,50 @@ class Survey:
         self.name = name
         self.bands = bands
         self.cadence = cadence
+        self.band_wavelengths = {}
+        
+        orig_path = os.getcwd()
     
+        mosfit_path = os.path.dirname(
+        os.path.realpath(mosfit.__file__)
+    )
+
+        print("Switching to MOSFIT path: %s" % mosfit_path)
+        os.chdir(mosfit_path)
         # generate initial LCs/model params
-        fitter.fit_events(
-            models=[],
+        DEFAULT_FITTER.fit_events(
+            models=['slsn'],
+            max_time=1000.0,
             iterations=0,
             write=False,
-            time_list=[],
+            time_list=[1,2],
             band_list=self.bands,
             band_instruments=self.name,
         )
+        model = DEFAULT_FITTER._model
         
-        # add photometry from fitter.model
-        self.band_wvs = {}
+        for task in model._call_stack:
+            cur_task = model._call_stack[task]
+            mod_name = cur_task.get('class', task)
+            if mod_name == 'photometry':
+                photometry = model._modules[task]
+                num_bands = len(photometry._unique_bands)
+                average_wavelengths = photometry._average_wavelengths
+                mask = average_wavelengths != 0
+                for i in range(num_bands):
+                    if mask[i]:
+                        self.band_wavelengths[photometry._unique_bands[i]['name']] = photometry._average_wavelengths[i]
+                        
+        print("Switching back to original working directory")
+        os.chdir(orig_path)
         
     def generate_sample_times(self, num_points):
         initial_time = -5 + np.random.random_sample() * 10
         return [initial_time + self.cadence * i for i in range(num_points)]
 
+    def print_band_wavelengths(self):
+        for k in self.band_wavelengths.keys():
+            print(k, self.band_wavelengths[k])
     
 class Transient:
     """Container for Transient object.

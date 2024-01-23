@@ -78,7 +78,7 @@ def generate_LCs_from_model(
     print("Switching back to original working directory")
     os.chdir(orig_path)
 
-    return transients
+    return transients, fitter
 
 
 def generate_transients_from_samples(

@@ -4,8 +4,8 @@ import mosfit
 import os
 import numpy as np
 from typing import List, Dict, Any
-from objects import *
-from utils import *
+from survey_agnostic_sn_vae.data_generation.objects import *
+from survey_agnostic_sn_vae.data_generation.utils import *
 
 def generate_LCs_from_model(
     model_type: str,

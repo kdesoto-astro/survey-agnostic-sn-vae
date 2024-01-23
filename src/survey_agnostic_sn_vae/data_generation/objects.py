@@ -153,6 +153,18 @@ class LightCurve:
         self.flux_err = flux_err
         self.survey = survey
         
+    def get_arrays(self):
+        t_arr = np.tile(self.timepoints, len(self.bands))
+        f_arr = np.ravel([self.flux[b] for b in self.bands])
+        f_err_arr = np.ravel([
+            self.flux_err[b] for b in self.bands
+        ])
+        b_arr = np.ravel([
+            np.tile(b, len(self.timepoints)) for b in self.bands
+        ])
+                
+        return t_arr, f_arr, f_err_arr, b_arr
+    
     @classmethod
     def from_arrays(
         cls,
@@ -182,6 +194,7 @@ class LightCurve:
         flux_errors_sorted = flux_errors[sort_idxs]
         bands_sorted = bands[sort_idxs]
         
+        
         # TODO: this currently assumes every band is sampled for each
         # timestamp - add method for band interpolation
         
@@ -199,7 +212,11 @@ class LightCurve:
             f_dict[b] = fluxes_b
             f_err_dict[b] = flux_errors_b
         
-        return cls(t_unique, f_dict, f_err_dict, survey, **kwargs)
+        return cls(
+            t_unique, f_dict,
+            f_err_dict, survey,
+            **kwargs
+        )
             
             
     def find_max_flux(self, bands = None):
@@ -212,6 +229,7 @@ class LightCurve:
             max_times[band] = self.timepoints[max_index]
             max_fluxes[band] = self.flux[band][max_index]
         return max_times, max_fluxes
+    
     
     def get_encoding_format(self):
         pass

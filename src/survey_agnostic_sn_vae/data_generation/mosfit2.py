@@ -14,7 +14,7 @@ def generate_LCs_from_model(
     output_path=None
 ) -> List[Transient]:
     """Generate clean light curves from a MOSFIT
-    model.
+    model, and save to folder.
 
     Parameters
     ----------
@@ -44,6 +44,7 @@ def generate_LCs_from_model(
     with suppress_stdout():
         fitter = mosfit.fitter.Fitter()
 
+        tmp_dir = os.path.join(output_path, "products")
         # generate initial LCs/model params
         fitter.fit_events(
             models=[model_type,],
@@ -54,19 +55,25 @@ def generate_LCs_from_model(
             num_walkers=num,
         )
         file_loc = os.path.join(
-            output_path,
-            f"products/{model_type}.json"
+            tmp_dir, f"{model_type}.json"
         )
         data = open_walkers_file(file_loc)
         transients = generate_transients_from_samples(data)
-
-        for i, s in enumerate(survey_list):
-            for t in transients:
+        
+        for t in transients:
+            for i, s in enumerate(survey_list):
                 fitter._event_name = i
                 t.generate_lightcurve(
                     s, output_path,
                     fitter=fitter
                 )
+            t.save(
+                os.path.join(
+                    output_path, "transients"
+                )
+            )
+            for f in glob.glob(os.path.join(tmp_dir, "*")):
+                os.remove(f)
                 
     print("Switching back to original working directory")
     os.chdir(orig_path)

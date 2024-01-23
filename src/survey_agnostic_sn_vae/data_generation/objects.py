@@ -1,18 +1,13 @@
 import numpy as np
 import mosfit
-import os
+import os, glob
 from typing import Dict
 import json
+import pickle
 
 from .utils import *
 
 DEFAULT_FITTER = mosfit.fitter.Fitter()
-
-
-def generate_random_id():
-    """Just make it unlikely to repeat."""
-    num = np.random.randint(0, 999_999_999)
-    return str(num).zfill(9)
 
 
 class Survey:
@@ -34,9 +29,12 @@ class Transient:
     """
     def __init__(
         self, model_type, model_params,
-        obj_id=generate_random_id(),
+        obj_id=None,
         **kwargs
     ):
+        if obj_id is None:
+            obj_id = str(hash(self))
+            
         self.obj_id = obj_id
         self.model_type = model_type
         self.model_params = model_params
@@ -81,9 +79,11 @@ class Transient:
             suffix=self.obj_id
         )
         
+        tmp_dir = os.path.join(output_path, "products")
+        
         file_loc = os.path.join(
-            output_path,
-            f"products/{self.model_type}_{self.obj_id}.json"
+            tmp_dir,
+            f"{self.model_type}_{self.obj_id}.json"
         )
         data = open_walkers_file(file_loc)
         phot_arrs = extract_photometry(data)
@@ -96,19 +96,51 @@ class Transient:
             )
         )
         
+    def save(self, output_dir):
+        """Save Transient object to pickle file.
+        """
+        save_name = os.path.join(
+            output_dir,
+            f"{self.model_type}_{self.obj_id}.pickle"
+        )
+        
+        with open(save_name, 'wb') as handle:
+            pickle.dump(
+                self, handle,
+                protocol=pickle.HIGHEST_PROTOCOL
+            )
+            
+    @classmethod
+    def load(output_dir, obj_id, model_type):
+        """Load Transient object from pickle file.
+        """
+        save_name = os.path.join(
+            output_dir,
+            f"transient_{model_type}_{obj_id}.pickle"
+        )
+        
+        with open(save_name, 'wb') as handle:
+            obj = pickle.load(
+                handle,
+                protocol=pickle.HIGHEST_PROTOCOL
+            )
+            return obj
+        
         
 class LightCurve:
     def __init__(
         self, timepoints, flux,
         flux_err, survey,
-        obj_id=generate_random_id(),
+        obj_id=None,
         transient_id=None,
         **kwargs
     ):
+        if obj_id is None:
+            obj_id = str(hash(self))
         self.obj_id = obj_id
         self.transient_id = transient_id
         
-        self.bands = flux.keys()
+        self.bands = np.asarray(list(flux.keys()))
         self.timepoints = timepoints
         if flux.keys() != flux_err.keys():
             raise ValueError("Make sure flux and flux err have the same bands")

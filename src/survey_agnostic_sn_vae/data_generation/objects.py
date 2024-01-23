@@ -7,12 +7,16 @@ import pickle
 
 from survey_agnostic_sn_vae.data_generation.utils import *
 
-DEFAULT_FITTER = mosfit.fitter.Fitter()
+LIMITING_MAGS = {'LSST': 23.867, 'ZTF': 20.433, 'PANSTARRS': 22.66}
 
+DEFAULT_FITTER = mosfit.fitter.Fitter()
 
 class Survey:
     def __init__(self, name, bands, cadence):
         self.name = name
+        self.limiting_magnitude = None
+        if self.name in LIMITING_MAGS.keys():
+            self.limiting_magnitude = LIMITING_MAGS[self.name]
         self.bands = bands
         self.cadence = cadence
         self.band_wavelengths = {}
@@ -30,13 +34,14 @@ class Survey:
             models=['slsn'],
             max_time=1000.0,
             iterations=0,
+            limiting_magnitude = self.limiting_magnitude,
             write=False,
             time_list=[1,2],
             band_list=self.bands,
             band_instruments=self.name,
         )
         model = DEFAULT_FITTER._model
-        
+                
         for task in model._call_stack:
             cur_task = model._call_stack[task]
             mod_name = cur_task.get('class', task)

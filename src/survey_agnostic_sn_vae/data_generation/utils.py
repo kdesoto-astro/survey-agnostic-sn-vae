@@ -3,6 +3,19 @@ import numpy as np
 from typing import Dict, List, Any
 import os
 
+from contextlib import contextmanager
+import sys
+
+@contextmanager
+def suppress_stdout():
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:  
+            yield
+        finally:
+            sys.stdout = old_stdout
+            
 def open_walkers_file(
     walkers_file: str
 ) -> Dict:
@@ -18,6 +31,7 @@ def open_walkers_file(
         while 'name' not in data: # recursive
             data = data[list(data.keys())[0]]
     return data
+
 
 def extract_photometry(
     data: Dict

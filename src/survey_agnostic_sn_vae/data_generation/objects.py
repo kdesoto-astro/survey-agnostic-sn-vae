@@ -32,7 +32,8 @@ class ModelConstraints:
             'redshift': 0.02, # constant for now
             'avhost': 0.0,
             'ebv': 0.0,
-            'lumdist': default_dist
+            'lumdist': default_dist,
+            'texplosion': np.random.random()*60.0 - 10.0
         }
         constraint_fn = os.path.join(CONSTRAINT_FOLDER, f"{model_type}.yaml")
         

@@ -1,0 +1,9 @@
+nhhost: 0.0000000000000001
+Mns: 1.4
+thetaPB: 0.75
+texplosion: 0.0
+kappa: 0.1
+kappagamma: 10000
+temperature: 3000
+codeltatime: 0.001
+doeltalambda: 0.1

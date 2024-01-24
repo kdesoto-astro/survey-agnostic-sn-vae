@@ -45,7 +45,8 @@ def open_walkers_file(
 
 
 def extract_photometry(
-    data: Dict
+    data: Dict,
+    t_list: Dict,
 ) -> np.array:
     """Extract photometry from a MOSFIT walkers file.
     Assumes ONE LIGHT CURVE.
@@ -54,7 +55,9 @@ def extract_photometry(
     ----------
     data : dict
         Stored walkers (inc. photometry) info
-    
+    t_list : dict
+        Maps time steps to bands
+        
     Returns
     ----------
     numpy array of shape (4, num_times)
@@ -76,6 +79,10 @@ def extract_photometry(
         (band, inst, tele, syst, bset) = full_band
         
         for ph in phot:
+            t = float(ph['time'])
+            if t not in t_list[band]:
+                continue
+                
             if not tuple(ph.get(y, '') for y in band_attr) == full_band:
                 continue
             
@@ -93,7 +100,7 @@ def extract_photometry(
             )
             m_err = max(upper_mag, lower_mag)
             realization.append([
-                float(ph['time']),
+                t,
                 float(ph['magnitude']),
                 m_err,
                 band

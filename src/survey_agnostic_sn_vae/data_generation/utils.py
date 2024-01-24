@@ -17,7 +17,7 @@ def suppress_stdout():
             sys.stdout = old_stdout
 
             
-def convert_mag_to_flux(m, merr, zpt):
+def convert_mag_to_flux(m, m_err, zpt):
     """Converts apparent magnitude to flux values.
     """
     log_f = (zpt - m) / 2.5
@@ -71,10 +71,9 @@ def extract_photometry(
         ) for x in phot if 'band' in x and 'magnitude' in x
     ]))
     
+    realization = []
     for full_band in band_list:
         (band, inst, tele, syst, bset) = full_band
-        
-        realization = []
         
         for ph in phot:
             if not tuple(ph.get(y, '') for y in band_attr) == full_band:
@@ -99,7 +98,6 @@ def extract_photometry(
                 m_err,
                 band
             ])
-            
     return np.asarray(realization).T
     
     

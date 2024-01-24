@@ -29,30 +29,32 @@ class Survey:
 
         print("Switching to MOSFIT path: %s" % mosfit_path)
         os.chdir(mosfit_path)
-        # generate initial LCs/model params
-        DEFAULT_FITTER.fit_events(
-            models=['slsn'],
-            max_time=1000.0,
-            iterations=0,
-            limiting_magnitude = self.limiting_magnitude,
-            write=False,
-            time_list=[1,2],
-            band_list=self.bands,
-            band_instruments=self.name,
-        )
-        model = DEFAULT_FITTER._model
-                
-        for task in model._call_stack:
-            cur_task = model._call_stack[task]
-            mod_name = cur_task.get('class', task)
-            if mod_name == 'photometry':
-                photometry = model._modules[task]
-                num_bands = len(photometry._unique_bands)
-                average_wavelengths = photometry._average_wavelengths
-                mask = average_wavelengths != 0
-                for i in range(num_bands):
-                    if mask[i]:
-                        self.band_wavelengths[photometry._unique_bands[i]['name']] = photometry._average_wavelengths[i]
+        
+        with suppress_stdout():
+            # generate initial LCs/model params
+            DEFAULT_FITTER.fit_events(
+                models=['slsn'],
+                max_time=1000.0,
+                iterations=0,
+                limiting_magnitude = self.limiting_magnitude,
+                write=False,
+                time_list=[1,2],
+                band_list=self.bands,
+                band_instruments=self.name,
+            )
+            model = DEFAULT_FITTER._model
+
+            for task in model._call_stack:
+                cur_task = model._call_stack[task]
+                mod_name = cur_task.get('class', task)
+                if mod_name == 'photometry':
+                    photometry = model._modules[task]
+                    num_bands = len(photometry._unique_bands)
+                    average_wavelengths = photometry._average_wavelengths
+                    mask = average_wavelengths != 0
+                    for i in range(num_bands):
+                        if mask[i]:
+                            self.band_wavelengths[photometry._unique_bands[i]['name']] = photometry._average_wavelengths[i]
                         
         print("Switching back to original working directory")
         os.chdir(orig_path)
@@ -177,7 +179,8 @@ class LightCurve:
         self.transient_id = transient_id
         
         self.bands = np.asarray(list(mag.keys()))
-        self.timepoints = timepoints
+        print(self.bands)
+        self.timepoints = np.asarray(timepoints).astype(float)
         if mag.keys() != mag_err.keys():
             raise ValueError(
                 "Make sure mag and mag err have the same bands"
@@ -187,11 +190,11 @@ class LightCurve:
         self.survey = survey
         
     def get_arrays(self):
-        t_arr = np.tile(self.timepoints, len(self.bands))
-        m_arr = np.ravel([self.mag[b] for b in self.bands])
+        t_arr = np.tile(self.timepoints, len(self.bands)).astype(float)
+        m_arr = np.ravel([self.mag[b] for b in self.bands]).astype(float)
         m_err_arr = np.ravel([
             self.mag_err[b] for b in self.bands
-        ])
+        ]).astype(float)
         b_arr = np.ravel([
             np.tile(b, len(self.timepoints)) for b in self.bands
         ])
@@ -246,21 +249,28 @@ class LightCurve:
             m_err_dict[b] = mag_errors_b
         
         return cls(
-            t_unique, f_dict,
-            f_err_dict, survey,
+            t_unique, m_dict,
+            m_err_dict, survey,
             **kwargs
         )
             
             
-    def find_peak_mag(self, bands = None):
+    def find_peak_mag(self, bands = None, composite = False):
         if bands == None:
             bands = self.bands
+
         max_times = {}
         peak_mags = {}
         for band in bands:
             max_index = np.argmin(self.mag[band])
             max_times[band] = self.timepoints[max_index]
             peak_mags[band] = self.mag[band][max_index]
+        
+        if composite:
+            peak_mag_arr = [peak_mags[b] for b in bands]
+            max_band = bands[np.argmin(peak_mag_arr)]
+            return max_times[max_band], peak_mags[max_band]
+        
         return max_times, peak_mags
     
     

@@ -1,6 +1,11 @@
 import os, glob
 from survey_agnostic_sn_vae.data_generation.utils import *
-from superraenn.preprocessing import save_lcs
+from survey_agnostic_sn_vae.data_generation.objects import Transient
+
+from superraenn.preprocess import save_lcs
+from superraenn.lc import LightCurve
+
+DEFAULT_ZPT = 26.3
 
 def generate_superraenn_lc_file(
     transient_dir,
@@ -19,8 +24,11 @@ def generate_superraenn_lc_file(
 
     # Update the LC objects with info from the metatable
     for transient in all_transients:
+        params = transient.model_params
+        if params['redshift'] <= 0.0:
+            continue
+            
         for lc in transient.lightcurves:
-            params = self.model_params
         
             t, m, merr, b = lc.get_arrays()
             
@@ -28,34 +36,51 @@ def generate_superraenn_lc_file(
                 m, merr, DEFAULT_ZPT
             )
             
-            sr_lc = Lightcurve(
+            sr_lc = LightCurve(
                 name=lc.obj_id,
                 times=t,
                 fluxes=f,
                 flux_errs=ferr,
                 filters=b,
-                obj_type=transient.model_type
             )
             
             sr_lc.add_LC_info(
                 zpt=DEFAULT_ZPT,
                 mwebv=0.0,
                 redshift=params['redshift'],
-                lim_mag=lc.survey.lim_mag,
-                obj_type=obj_types[i]
+                lim_mag=lc.survey.limiting_magnitude,
+                obj_type=transient.model_type
             )
             
             sr_lc.wavelengths = lc.survey.band_wavelengths
             sr_lc.get_abs_mags()
             sr_lc.sort_lc()
-            pmjd = my_lc.find_peak(
-                lc.find_max_flux()[0]
+            pmjd = sr_lc.find_peak(
+                lc.find_peak_mag(composite=True)[0]
             )
             sr_lc.shift_lc(pmjd)
             sr_lc.correct_time_dilation()
+            filt_dict = {f: i for i, f in enumerate(lc.bands)}
             sr_lc.filter_names_to_numbers(filt_dict)
             sr_lc.cut_lc()
             sr_lc.make_dense_LC(len(lc.bands))
+            
+            # pad dense LC to six bands
+            if len(lc.bands) <= 3:
+                tile_factor = int(6 / len(lc.bands))
+                sr_lc.dense_lc = np.repeat(
+                    sr_lc.dense_lc, tile_factor,
+                    axis=1
+                )
+                print(sr_lc.dense_lc.shape)
+                
+            elif len(lc.bands) < 6:
+                sr_lc.dense_lc = np.repeat(
+                    sr_lc.dense_lc, 2,
+                    axis=1
+                )[:,:6,:]
+                print(sr_lc.dense_lc.shape)
+            
             sr_lcs.append(sr_lc)
             
     save_lcs(sr_lcs, save_dir)

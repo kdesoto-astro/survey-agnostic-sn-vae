@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 from survey_agnostic_sn_vae.data_generation.objects import *
 from survey_agnostic_sn_vae.data_generation.utils import *
 
+
 def generate_LCs_from_model(
     model_type: str,
     survey_list: List[Survey],
@@ -33,7 +34,6 @@ def generate_LCs_from_model(
     if output_path is None:
         output_path = orig_path
 
-    print(output_path)
     mosfit_path = os.path.dirname(
         os.path.realpath(mosfit.__file__)
     )

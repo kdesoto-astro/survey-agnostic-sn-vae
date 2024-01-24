@@ -19,7 +19,7 @@ def generate_LCs_from_model(
 
     Parameters
     ----------
-    model_name : str
+    model_type : str
         The name of the built-in MOSFIT model.
     num : int, optional
         The number of light curves to generate from
@@ -42,8 +42,9 @@ def generate_LCs_from_model(
     os.chdir(mosfit_path)
 
     with suppress_stdout():
+    #if True:
         fitter = mosfit.fitter.Fitter()
-
+        model_constraints = ModelConstraints(model_type)
         tmp_dir = os.path.join(output_path, "products")
         # generate initial LCs/model params
         fitter.fit_events(
@@ -53,6 +54,7 @@ def generate_LCs_from_model(
             write=True,
             output_path=output_path,
             num_walkers=num,
+            user_fixed_parameters=model_constraints.to_list()
         )
         file_loc = os.path.join(
             tmp_dir, f"{model_type}.json"

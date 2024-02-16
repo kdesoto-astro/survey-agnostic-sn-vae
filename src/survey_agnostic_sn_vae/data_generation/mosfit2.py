@@ -49,7 +49,7 @@ def generate_LCs_from_model(
         # generate initial LCs/model params
         fitter.fit_events(
             models=[model_type,],
-            max_time=1000.0,
+            max_time=500.0,
             iterations=0,
             write=True,
             output_path=output_path,

@@ -1,6 +1,9 @@
 # some product files
 docs/notebooks/products/slsn_*.json
 docs/notebooks/transients/slsn_*.json
+docs/notebooks/transients/slsn_*.pickle
+docs/notebooks/superraenn/lcs_*
+docs/notebooks/products/slsn_*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -33,7 +33,7 @@ class ModelConstraints:
             'avhost': 0.0,
             'ebv': 0.0,
             'lumdist': default_dist,
-            'texplosion': np.random.random()*60.0 - 10.0
+            'texplosion': np.random.random()*50.0
         }
         constraint_fn = os.path.join(CONSTRAINT_FOLDER, f"{model_type}.yaml")
         
@@ -85,7 +85,7 @@ class Survey:
             # generate initial LCs/model params
             DEFAULT_FITTER.fit_events(
                 models=['slsn'],
-                max_time=1000.0,
+                max_time=500.0,
                 iterations=0,
                 limiting_magnitude = self.limiting_magnitude,
                 write=False,
@@ -110,60 +110,49 @@ class Survey:
         print("Switching back to original working directory")
         os.chdir(orig_path)
         
-    def generate_sample_times(self, final_time, max_points=1000):
+    def generate_sample_times(self, final_time, max_points=50):
         """Approximate sampling cadence for survey.
         """
-        times = {b: [] for b in self.bands}
-        
-        first_random = np.random.random()
-        for b in times:
-            times[b] = [0.0] # first observation
-                
-        day_offset = np.random.normal(
-            scale=1.0, size=max_points*len(self.bands)
-        )
-        day_offset = [int(round(x)) for x in day_offset] # in integer days
-        
-        small_offsets = np.random.normal(
-            scale=0.1, size=max_points*len(self.bands)
-        )
-        
-        i = 0
-        j = 0 
-        ref_band = self.bands[0]
-        
-        while np.max(times[ref_band]) < final_time:
-            if np.isscalar(self.cadence): # all bands sampled the same night
-                new_time = times[ref_band][-1] + self.cadence + day_offset[i]
-                i += 1
+        times = {}
+        if np.isscalar(self.cadence):
+            ref_band = self.bands[0]
+            day_offset = np.round(
+                np.random.normal(scale=1.0, size=max_points)
+            ).astype(int)
+            day_offset[day_offset < -1*self.cadence + 1] = 0.0
+            small_offsets = np.random.normal(scale=0.1, size=max_points)
+            small_offsets = np.clip(small_offsets, a_min=0.25, a_max=0.25)
+            times[ref_band] = self.cadence + day_offset + small_offsets
+            times[ref_band] = np.cumsum(times[ref_band])
+            
+            for b in self.bands:
+                if b == ref_band:
+                    continue
+                small_offsets = np.random.normal(scale=0.1, size=max_points)
+                small_offsets = np.clip(small_offsets, a_min=0.25, a_max=0.25)
 
-                if new_time < times[ref_band][-1] + 1: # same day
-                    continue
-                    
-                times[ref_band].append(new_time + small_offsets[j])
-                j += 1
+                times[b] = times[ref_band] + small_offsets
+                print(times[b])
+
+                times[b] = times[b][times[b] < final_time]
                 
-                for b in self.bands:
-                    if b == ref_band:
-                        continue
-                    times[b].append(new_time + small_offsets[j])
-                    j += 1
-                    
-            else: # all bands sampled separately
-                all_last_times = {times[b][-1]: b for b in times}
-                next_b = all_last_times[min(all_last_times.keys())]
-                new_time = times[next_b][-1] + self.cadence[next_b]
-                new_time += day_offset[i] + small_offsets[j]
-                i += 1
-                j += 1
-                if new_time < times[next_b][-1] + 1:
-                    continue
-                times[next_b].append(new_time)
-    
+
+        else:
+            for b in self.bands:
+                day_offset = np.round(
+                    np.random.normal(scale=1.0, size=max_points)
+                ).astype(int)
+                day_offset[day_offset < -1*self.cadence[b] + 1] = 0.0
+                small_offsets = np.random.normal(scale=0.1, size=max_points)
+                times[b] = self.cadence[b] + day_offset + small_offsets
+                times[b] = np.cumsum(times[b])
+                print(times[b])
+                times[b] = times[b][times[b] < final_time]
+                
         t_list = []
         for b in times:
-            t_list.extend(times[b])
-        
+            times[b] -= times[b][0]
+            t_list.extend(list(times[b]))
         return times, sorted(t_list)
 
     def print_band_wavelengths(self):
@@ -200,7 +189,7 @@ class Transient:
             
 
     def generate_lightcurve(
-        self, survey, output_path, max_time=200,
+        self, survey, output_path, max_time=500,
         fitter=DEFAULT_FITTER
     ):
         """Generate LightCurve object for a given
@@ -220,7 +209,7 @@ class Transient:
             time_list=t_list,
             band_list=s_bands,
             band_instruments=[s_name,],
-            max_time=200.0,
+            max_time=500.0,
             iterations=0,
             write=True,
             output_path=output_path,
@@ -237,7 +226,6 @@ class Transient:
         )
         data = open_walkers_file(file_loc)
         phot_arrs = extract_photometry(data, s_times)
-        
         lc = LightCurve.from_arrays(
             *phot_arrs, survey,
             obj_id=fitter._event_name,
@@ -302,16 +290,19 @@ class LightCurve:
             self.mag_err[b] = self.mag_err[b].astype(float)
         
     def get_arrays(self):
-        t_arr = np.ravel([self.times[b] for b in self.bands]).astype(float)
-        m_arr = np.ravel([self.mag[b] for b in self.bands]).astype(float)
-        m_err_arr = np.ravel([
-            self.mag_err[b] for b in self.bands
-        ]).astype(float)
-        b_arr = np.ravel([
-            np.tile(b, len(self.timepoints)) for b in self.bands
-        ])
+        t_arr, m_arr, m_err_arr, b_arr = [], [], [], []
+        for b in self.bands:
+            t_arr.extend(self.times[b])
+            m_arr.extend(self.mag[b])
+            m_err_arr.extend(self.mag_err[b])
+            b_arr.extend([b,] * len(self.times[b]))
                 
-        return t_arr, m_arr, m_err_arr, b_arr
+        return (
+            np.asarray(t_arr),
+            np.asarray(m_arr),
+            np.asarray(m_err_arr),
+            np.asarray(b_arr)
+        )
     
     @classmethod
     def from_arrays(
@@ -375,14 +366,18 @@ class LightCurve:
 
         max_times = {}
         peak_mags = {}
+        b_inc = []
         for band in bands:
+            if len(self.times[band]) == 0:
+                continue
             max_index = np.argmin(self.mag[band])
-            max_times[band] = self.timepoints[max_index]
+            max_times[band] = self.times[band][max_index]
             peak_mags[band] = self.mag[band][max_index]
+            b_inc.append(band)
         
         if composite:
-            peak_mag_arr = [peak_mags[b] for b in bands]
-            max_band = bands[np.argmin(peak_mag_arr)]
+            peak_mag_arr = [peak_mags[b] for b in b_inc]
+            max_band = b_inc[np.argmin(peak_mag_arr)]
             return max_times[max_band], peak_mags[max_band]
         
         return max_times, peak_mags

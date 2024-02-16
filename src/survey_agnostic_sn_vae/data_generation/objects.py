@@ -153,6 +153,7 @@ class Survey:
         for b in times:
             times[b] -= times[b][0]
             t_list.extend(list(times[b]))
+
         return times, sorted(t_list)
 
     def print_band_wavelengths(self):
@@ -226,6 +227,7 @@ class Transient:
         )
         data = open_walkers_file(file_loc)
         phot_arrs = extract_photometry(data, s_times)
+
         lc = LightCurve.from_arrays(
             *phot_arrs, survey,
             obj_id=fitter._event_name,
@@ -378,6 +380,7 @@ class LightCurve:
         if composite:
             peak_mag_arr = [peak_mags[b] for b in b_inc]
             max_band = b_inc[np.argmin(peak_mag_arr)]
+
             return max_times[max_band], peak_mags[max_band]
         
         return max_times, peak_mags

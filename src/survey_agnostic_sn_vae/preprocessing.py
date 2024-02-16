@@ -7,7 +7,6 @@ from survey_agnostic_sn_vae.data_generation.objects import Transient
 from superraenn.preprocess import save_lcs
 from superraenn.lc import LightCurve
 
-
 DEFAULT_ZPT = 26.3
 
 def generate_superraenn_lc_file(
@@ -26,6 +25,7 @@ def generate_superraenn_lc_file(
     sr_lcs = []
 
     transient_id = 0
+
     # Update the LC objects with info from the metatable
     for transient in all_transients:
         params = transient.model_params
@@ -61,6 +61,7 @@ def generate_superraenn_lc_file(
             
             sr_lc.wavelengths = lc.survey.band_wavelengths
             sr_lc.group = transient_id
+
             sr_lc.get_abs_mags()
             sr_lc.sort_lc()
             pmjd = sr_lc.find_peak(
@@ -91,7 +92,6 @@ def generate_superraenn_lc_file(
                     sr_lc.dense_lc, 2,
                     axis=1
                 )[:,:6,:]
-            
             sr_lcs.append(sr_lc)
         transient_id += 1
             
@@ -194,4 +194,3 @@ def prep_input(input_lc_file, new_t_max=100.0, filler_err=1.0,
         model_prep_file = outdir+'prep.npz'
         np.savez(model_prep_file, bandmin=bandmin, bandmax=bandmax)
     return sequence, outseq, ids, sequence_len, nfilts
-

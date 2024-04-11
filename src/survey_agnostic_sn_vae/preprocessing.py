@@ -37,6 +37,8 @@ def generate_superraenn_lc_file(
             continue
             
         for lc in transient.lightcurves:
+            if lc.survey.name != 'LSST':
+                continue
             t, m, merr, b = lc.get_arrays()
             
             if len(t) < 5:
@@ -164,10 +166,10 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
 
     lms = []
     for i, lightcurve in enumerate(lightcurves):
-        sequence[i, 0:lengths[i], 0] = lightcurve.times[:sequence_len]
+        sequence[i, 0:lengths[i], 0] = lightcurve.times[:sequence_len] / 1000. # to keep values small
         sequence[i, 0:lengths[i], 1:nfiltsp1] = lightcurve.dense_lc[:sequence_len, :, 0] # fluxes
         sequence[i, 0:lengths[i], nfiltsp1:nfiltsp2] = lightcurve.dense_lc[:sequence_len, :, 1] # flux errors
-        sequence[i, lengths[i]:, 0] = np.max(lightcurve.times)+new_t_max
+        sequence[i, lengths[i]:, 0] = (np.max(lightcurve.times)+new_t_max) / 1000.
         sequence[i, lengths[i]:, 1:nfiltsp1] = lightcurve.abs_lim_mag
         sequence[i, lengths[i]:, nfiltsp1:nfiltsp2] = filler_err
         sequence[i, :, nfiltsp2:-1] = lightcurve.wavelengths
@@ -199,8 +201,10 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         / (bandmax - bandmin)
     sequence[:, :, nfiltsp2:-1] = (sequence[:, :, nfiltsp2:-1] - wavemin) \
         / (wavemax - wavemin)
+    sequence[:, :, -1] = sequence[:, :, -1] / np.max(sequence[:, :, -1])
 
     new_lms = np.reshape(np.repeat(lms, sequence_len), (len(lms), -1))
+    new_lms = (-1 * new_lms - bandmin) / (bandmax - bandmin) 
 
     outseq = np.reshape(sequence[:, :, 0], (len(sequence), sequence_len, 1)) * 1.0
     outseq = np.dstack((outseq, new_lms))
@@ -214,4 +218,5 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         np.savez(model_prep_file, wavemin=wavemin, wavemax=wavemax, bandmin=bandmin, bandmax=bandmax)
         model_prep_file = os.path.join(outdir,'prep.npz')
         np.savez(model_prep_file, wavemin=wavemin, wavemax=wavemax, bandmin=bandmin, bandmax=bandmax)
+        
     return sequence, outseq_tiled, ids, sequence_len, nfilts

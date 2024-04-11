@@ -18,7 +18,7 @@ class ReconstructionLoss(tf.keras.losses.Loss):
     def __call__(self, y_true, y_pred, sample_weight=None):
         f_true = y_true[:, :, 1:self.nfilts+1]
         
-        err_padding = tf.reduce_max(y_true[0,-1,self.nfilts+1])
+        err_padding = tf.reduce_max(y_true[:,-1,self.nfilts+1])
         err_true = y_true[:,:,self.nfilts+1:2*self.nfilts+1]
         
         f_pred = tf.reshape(y_pred, tf.shape(f_true))

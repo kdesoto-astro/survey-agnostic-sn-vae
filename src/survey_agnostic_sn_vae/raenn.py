@@ -21,9 +21,13 @@ from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
 from survey_agnostic_sn_vae.custom_nn_layers.kl_loss import SamplingLayer, AnnealingCallback
 from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLoss
 
+print(tf.config.list_physical_devices('GPU'))
+
 now = datetime.datetime.now()
 date = str(now.strftime("%Y-%m-%d"))
 set_random_seed(42)
+
+
 def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
     """
     Make RAENN model
@@ -59,8 +63,8 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
         TimeDistributed(
             Dense(
                 LSTMN,
-                activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3),
+                activation="leaky_relu",
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
             ),
             name="enc1"
         )
@@ -75,7 +79,6 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
             #dropout=0.5,
         )
     )
-
     
     # DECODER
     decoder = Sequential()
@@ -83,8 +86,8 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
         TimeDistributed(
             Dense(
                 LSTMN,
-                activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3)
+                activation="leaky_relu",
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2)
             ), name="dec1"
         )
     )
@@ -92,8 +95,8 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
         TimeDistributed(
             Dense(
                 1,
-                activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3)
+                activation="leaky_relu",
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2)
             ), name="dec2"
         )
     )
@@ -101,12 +104,12 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
     annealing = AnnealingCallback(sampling.beta,"cyclical",n_epochs)    
     encoded_mean_layer = Dense(
         encodingN, activation='linear', name="mu",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
+        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-1),
     )
     
     encoded_log_var_layer = Dense(
         encodingN, activation='linear', name="sigma",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-5),
+        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
     )
     
     encoded = encoder(input_1[:,:,:-1])
@@ -173,7 +176,7 @@ def get_encoder(model, input_1, encoded):
 
 
 def get_decoder(model, encodingN):
-    encoded_input = Input(shape=(None, (encodingN+2)))
+    encoded_input = Input(shape=(None, (encodingN+3)))
     decoder_layer2 = model.layers[-2]
     decoder_layer3 = model.layers[-1]
     decoder = Model(encoded_input, decoder_layer3(decoder_layer2(encoded_input)))
@@ -181,7 +184,7 @@ def get_decoder(model, encodingN):
 
 
 def get_decodings(model, sequence, outseq):
-    decodings = model.predict([sequence, outseq])
+    decodings = model([sequence, outseq])
     return decodings
 
 
@@ -206,7 +209,7 @@ def save_encodings(model, encoder, sequence, ids, INPUT_FILE,
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
-    encodings = encoder.predict(sequence)
+    encodings = encoder(sequence)
     encoder.reset_states()
 
     encoder_sne_file = model_dir+'en_'+date+'_'+str(encodingN)+'_'+str(LSTMN)+'.npz'

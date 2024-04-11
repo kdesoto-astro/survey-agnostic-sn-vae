@@ -1,10 +1,11 @@
 # lstm autoencoder recreate sequence
 from argparse import ArgumentParser
-from keras.models import Model
+from keras.models import Model, clone_model
 from keras.layers import Input, GRU, TimeDistributed
-from keras.layers import Dense, concatenate
+from keras.layers import Dense, concatenate, Concatenate
 from keras.layers import RepeatVector
-from keras.optimizers import Adam
+from tensorflow.keras.optimizers.legacy import Adam
+from keras import Sequential
 import numpy as np
 import matplotlib.pyplot as plt
 import keras.backend as K
@@ -12,6 +13,8 @@ from keras.callbacks import EarlyStopping
 import datetime
 import os
 import logging
+import tensorflow as tf
+from tensorflow.keras.utils import set_random_seed
 
 from survey_agnostic_sn_vae.preprocessing import prep_input
 from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
@@ -20,13 +23,8 @@ from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLos
 
 now = datetime.datetime.now()
 date = str(now.strftime("%Y-%m-%d"))
-
-NEURON_N_DEFAULT = 100
-ENCODING_N_DEFAULT = 10
-N_EPOCH_DEFAULT = 1000
-
-
-def make_model(LSTMN, encodingN, maxlen, nfilts):
+set_random_seed(42)
+def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
     """
     Make RAENN model
 
@@ -52,8 +50,8 @@ def make_model(LSTMN, encodingN, maxlen, nfilts):
     encoded : keras.layer
         RAENN encoding layer
     """
-    input_1 = Input((None, nfilts*3+1))
-    input_2 = Input((maxlen, 2))
+    input_1 = Input((None, nfilts*3+2))
+    input_2 = Input((maxlen*6, 3))
 
     # make encoder and decoder models separately
     encoder = Sequential()
@@ -62,8 +60,8 @@ def make_model(LSTMN, encodingN, maxlen, nfilts):
             Dense(
                 LSTMN,
                 activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
-            ), 
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3),
+            ),
             name="enc1"
         )
     )
@@ -86,34 +84,32 @@ def make_model(LSTMN, encodingN, maxlen, nfilts):
             Dense(
                 LSTMN,
                 activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3)
             ), name="dec1"
         )
     )
     decoder.add(
         TimeDistributed(
             Dense(
-                nfilts,
+                1,
                 activation="relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
+                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-3)
             ), name="dec2"
         )
     )
-    sampling = Sampling()
-    annealing = AnnealingCallback(sampling.beta,"cyclical",n_epochs)
-    callbacks_list.append(annealing)
-    
+    sampling = SamplingLayer()
+    annealing = AnnealingCallback(sampling.beta,"cyclical",n_epochs)    
     encoded_mean_layer = Dense(
         encodingN, activation='linear', name="mu",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
     )
     
     encoded_log_var_layer = Dense(
         encodingN, activation='linear', name="sigma",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-5),
     )
     
-    encoded = encoder(input_1)
+    encoded = encoder(input_1[:,:,:-1])
     
     # add KL loss
     encoded_mean = encoded_mean_layer(encoded)
@@ -121,15 +117,15 @@ def make_model(LSTMN, encodingN, maxlen, nfilts):
     encoded_sample = sampling([encoded_mean, encoded_log_var], True)
     
     # This just outputs the same input, but adds a loss term
-    #encoded = SimilarityLossLayer(encoded, input_1)
+    #encoded = SimilarityLossLayer()(encoded_sample, input_1)
 
-    repeater = RepeatVector(maxlen)(encoded_sample)
+    repeater = RepeatVector(maxlen*6)(encoded_sample)
     merged = concatenate([repeater, input_2], axis=-1)
     decoded = decoder(merged)
     
     model = Model([input_1, input_2], decoded)
 
-    new_optimizer = Adam(lr=1e-4, beta_1=0.9, beta_2=0.999)
+    new_optimizer = Adam(lr=1e-3, beta_1=0.9, beta_2=0.999)
     
     rl = ReconstructionLoss(nfilts)
     model.compile(optimizer=new_optimizer, loss=rl)
@@ -138,7 +134,7 @@ def make_model(LSTMN, encodingN, maxlen, nfilts):
                        verbose=0, mode='min', baseline=None,
                        restore_best_weights=True)
 
-    callbacks_list = [es]
+    callbacks_list = [es, annealing]
     return model, callbacks_list, input_1, encoded
 
 
@@ -164,13 +160,15 @@ def fit_model(model, callbacks_list, sequence, outseq, n_epoch):
     model : keras.models.Model
         Trained keras model
     """
-    model.fit([sequence, outseq], sequence, epochs=n_epoch,  verbose=1,
-              shuffle=False, callbacks=callbacks_list, validation_split=0.33)
+    model.fit(
+        [sequence, outseq], sequence, epochs=n_epoch,  verbose=1,
+        shuffle=True, callbacks=callbacks_list, validation_split=0.1,
+        batch_size=512
+    )
     return model
 
-
 def get_encoder(model, input_1, encoded):
-    encoder = Model(input=input_1, output=encoded)
+    encoder = Model(input_1, encoded)
     return encoder
 
 
@@ -178,21 +176,12 @@ def get_decoder(model, encodingN):
     encoded_input = Input(shape=(None, (encodingN+2)))
     decoder_layer2 = model.layers[-2]
     decoder_layer3 = model.layers[-1]
-    decoder = Model(input=encoded_input, output=decoder_layer3(decoder_layer2(encoded_input)))
+    decoder = Model(encoded_input, decoder_layer3(decoder_layer2(encoded_input)))
     return decoder
 
 
-def get_decodings(decoder, encoder, sequence, lms, encodingN, sequence_len):
-    encoded = encoder.predict(seq)[-1]
-    encoded = RepeatVector(sequence_len)(encoded)
-    repeater = np.repeat(encoding, sequence_len, axis=1)
-    out_seq = np.reshape(sequence, (len(sequence), sequence_len, 1))
-    lms_test = np.reshape(np.repeat(lms[i], sequence_len), (len(sequence), -1))
-    out_seq = np.dstack((out_seq, lms_test))
-    
-    decoding_input = np.concatenate((repeater, out_seq), axis=-1)
-    decodings = decoder.predict(decoding_input)
-    
+def get_decodings(model, sequence, outseq):
+    decodings = model.predict([sequence, outseq])
     return decodings
 
 
@@ -202,15 +191,8 @@ def save_model(model, encodingN, LSTMN, model_dir='models/', outdir='./'):
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
-    # serialize model to JSON
-    model_json = model.to_json()
-    with open(model_dir+"model_"+date+"_"+str(encodingN)+'_'+str(LSTMN)+".json", "w") as json_file:
-        json_file.write(model_json)
-    with open(model_dir+"model.json", "w") as json_file:
-        json_file.write(model_json)
-    # serialize weights to HDF5
-    model.save_weights(model_dir+"model_"+date+"_"+str(encodingN)+'_'+str(LSTMN)+".h5")
-    model.save_weights(model_dir+"model.h5")
+    model.save(model_dir+"model_"+date+"_"+str(encodingN)+'_'+str(LSTMN)+".h5")
+    model.save(model_dir+"model.h5")
 
     logging.info(f'Saved model to {model_dir}')
 
@@ -234,6 +216,57 @@ def save_encodings(model, encoder, sequence, ids, INPUT_FILE,
     logging.info(f'Saved encodings to {model_dir}')
 
 
+def add_encoded_nodes(model_orig, n_epochs, n=1):
+    """Add extra nodes to the encoded means and encoded stddevs layers,
+    from a trained model."""
+    encoder = model_orig.layers[1]
+    LSTMN = encoder.layers[0].output.shape[-1]
+    encodingN = model_orig.layers[2].output.shape[-1]
+    maxlen = int(model_orig.layers[5].output.shape[1] / 6)
+    #maxlen = 0
+    
+    l_weights = [model_orig.layers[0].get_weights(),]
+    
+    for subl in model_orig.layers[1].layers:
+        l_weights.append(
+            subl.get_weights()
+        )
+    
+    # expand mu and sigma weights
+    mu_weights = model_orig.layers[2].get_weights()
+    sig_weights = model_orig.layers[3].get_weights()
+    
+    mu_weights[0] = tf.concat([mu_weights[0], tf.random.normal((LSTMN, n), stddev=1e-5)], axis=-1)
+    mu_weights[1] = tf.concat([mu_weights[1], tf.random.normal([n,], stddev=1e-5)], axis=0)
+    sig_weights[0] = tf.concat([sig_weights[0], tf.random.normal((LSTMN, n), stddev=1e-5)], axis=-1)
+    sig_weights[1] = tf.concat([sig_weights[1], tf.random.normal([n,], stddev=1e-5)], axis=0)
+    
+    l_weights.append(mu_weights)
+    l_weights.append(sig_weights)
+    
+    # expand Sequential layer
+    dec1_weights = model_orig.layers[8].layers[0].get_weights()
+    dec1_weights[0] = tf.concat([dec1_weights[0], tf.random.normal((n, LSTMN), stddev=1e-5)], axis=-2)
+    #dec1_weights[1] = tf.concat([dec1_weights[1], tf.random.normal(n)])
+    
+    l_weights.append(dec1_weights)
+    l_weights.append(model_orig.layers[8].layers[1].get_weights())
+    
+    # make model accomodating for bigger encoded layer
+    model, callbacks_list, input_1, encoded = make_model(LSTMN, encodingN+n, maxlen, 6, n_epochs)
+    
+    # transfer weights!
+    #model.layers[0].set_weights(l_weights[0])
+    model.layers[1].layers[0].set_weights(l_weights[1])
+    model.layers[1].layers[1].set_weights(l_weights[2])
+    model.layers[2].set_weights(l_weights[3])
+    model.layers[3].set_weights(l_weights[4])
+    model.layers[8].layers[0].set_weights(l_weights[5])
+    model.layers[8].layers[1].set_weights(l_weights[6])
+    
+    return model, callbacks_list, input_1, encoded
+
+    
 def main():
     parser = ArgumentParser()
     parser.add_argument('lcfile', type=str, help='Light curve file')

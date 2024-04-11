@@ -1,6 +1,6 @@
 import tensorflow as tf
-from tf.keras.layers import Layer
-from tf.keras.callbacks import Callback
+from tensorflow.keras.layers import Layer
+from tensorflow.keras.callbacks import Callback
 
 class AnnealingCallback(Callback):
     """
@@ -28,7 +28,7 @@ class AnnealingCallback(Callback):
             
         elif self.name=="cyclical":
             T=self.total_epochs
-            tau = epoch % math.ceil(T/self.M) / (T/self.M)
+            tau = epoch % tf.math.ceil(T/self.M) / (T/self.M)
             #f epoch <= math.ceil(T/self.M):
             #    new_value = 0. # first cycle is all 1
             if tau <= self.R:
@@ -63,7 +63,7 @@ class SamplingLayer(Layer):
             beta_weight,trainable=False,
             name="Beta_annealing",validate_shape=False
         )
-        super(Sampling, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
     def call(self, inputs, add_loss):
         z_mean, z_log_var = inputs
@@ -75,7 +75,9 @@ class SamplingLayer(Layer):
         
         if add_loss:
             #Add regularizer loss
-            kl_loss = - 0.5 * tf.reduce_mean(1 + z_log_var - tf.math.square(z_mean) - tf.math.exp(z_log_var))
+            kl_loss = - 0.5 * tf.reduce_mean(
+                1 + z_log_var - tf.math.square(z_mean) - tf.math.exp(z_log_var)
+            )
             self.add_metric(kl_loss, "KL_loss")
             self.add_loss(self.beta * kl_loss)
             self.add_metric(self.beta, "beta")

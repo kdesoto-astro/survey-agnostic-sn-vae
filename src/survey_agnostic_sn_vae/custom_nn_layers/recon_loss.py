@@ -21,8 +21,9 @@ class ReconstructionLoss(tf.keras.losses.Loss):
         err_padding = tf.reduce_max(y_true[0,-1,self.nfilts+1])
         err_true = y_true[:,:,self.nfilts+1:2*self.nfilts+1]
         
+        f_pred = tf.reshape(y_pred, tf.shape(f_true))
         idx_padding = tf.math.greater_equal(tf.reduce_max(err_true, axis=2), err_padding * 0.9) # no more padding
         idx_padding_reshaped = tf.repeat(tf.expand_dims(idx_padding, 2), self.nfilts, axis=2)
-        reduced_mean = tf.reduce_mean(tf.math.square(f_true - y_pred)[~idx_padding_reshaped])
-        loss = 0.5 * reduced_mean
+        reduced_mean = tf.reduce_mean(tf.math.square((f_true - f_pred)/err_true)[~idx_padding_reshaped])
+        loss = 0.5 * reduced_mean # way overweight
         return loss

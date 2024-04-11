@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tf.keras.layers import Layer
+from tensorflow.keras.layers import Layer
 
 
 class SimilarityLossLayer(Layer):
@@ -18,7 +18,7 @@ class SimilarityLossLayer(Layer):
     sample : array
         a sampled value from the latent space
     """
-    def __init__(self, maxlen, bmin, bmax, **kwargs):
+    def __init__(self, **kwargs):
 
         self.k1 = 20. #TODO: add cyclical annealing
         self.k0 = 2.
@@ -44,7 +44,7 @@ class SimilarityLossLayer(Layer):
         objid_bool_mat = tf.math.logical_not(tf.math.equal(objid_mat, tf.transpose(objid_mat)))
 
         # Distance for object IDs is 0 if they're the same and 1 otherwise
-        objid_dist = tf.tensor(1.) * objid_bool_mat
+        objid_dist = tf.cast(objid_bool_mat, tf.float32)
 
         # Compute distance between distances?
         L_sim = tf.reduce_mean(tf.math.square(S_ij - objid_dist), axis=-1)

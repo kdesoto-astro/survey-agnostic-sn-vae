@@ -1,5 +1,5 @@
-import tensorflow as tf
-from tensorflow.keras.layers import Layer
+#import tensorflow as tf
+from keras.layers import Layer
 
 
 class SimilarityLossLayer(Layer):
@@ -25,15 +25,8 @@ class SimilarityLossLayer(Layer):
 
         super(SimilarityLossLayer, self).__init__(**kwargs)
 
-    def call(self, samples, input1):
+    def call(self, samples, objids):
         # samples is the latent variables
-        # input1 is the entire input array (last row is object IDs)
-        objids = input1[:,:,-1]
-
-        # calculate distance in latent space
-        # calculate what the "distances" are supposed to be
-        # get the difference
-        # average over elements
         S_i = tf.repeat(tf.expand_dims(samples, 0), tf.shape(samples)[0], axis=0)
         S_j = tf.transpose(S_i, perm=[1,0,2])
         # This is the distance in latent space

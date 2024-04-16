@@ -1,11 +1,13 @@
 # lstm autoencoder recreate sequence
 from argparse import ArgumentParser
 from keras.models import Model, clone_model
-from keras.layers import Input, GRU, TimeDistributed
-from keras.layers import Dense, concatenate, Concatenate
-from keras.layers import RepeatVector
-from tensorflow.keras.optimizers.legacy import Adam
-from keras import Sequential
+from keras.layers import Input, TimeDistributed
+from keras.layers import Dense, GRU, concatenate, Concatenate, JaxLayer
+from keras.layers import RepeatVector, Reshape
+from keras.optimizers import Adam
+from keras import Sequential, ops
+from keras import callbacks as callbacks_module
+
 import numpy as np
 import matplotlib.pyplot as plt
 import keras.backend as K
@@ -13,22 +15,33 @@ from keras.callbacks import EarlyStopping
 import datetime
 import os
 import logging
-import tensorflow as tf
-from tensorflow.keras.utils import set_random_seed
+from keras.utils import set_random_seed
+import keras
+import pretty_errors
+import math
+import jax
 
 from survey_agnostic_sn_vae.preprocessing import prep_input
-from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
+#from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
 from survey_agnostic_sn_vae.custom_nn_layers.kl_loss import SamplingLayer, AnnealingCallback
 from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLoss
+from survey_agnostic_sn_vae.custom_nn_layers.jax_gru import GRUHaiku
+from survey_agnostic_sn_vae.custom_nn_layers.custom_jax_model import JAXModel
+from survey_agnostic_sn_vae.custom_nn_layers.jax_epoch_iterator import JAXEpochIterator
+from survey_agnostic_sn_vae.custom_nn_layers import tree, array_slicing, data_adapter_utils
 
-print(tf.config.list_physical_devices('GPU'))
+
+
+from jax.lib import xla_bridge
+print(xla_bridge.get_backend().platform)
+#import jax
+#jax.config.update('jax_disable_jit', False)
 
 now = datetime.datetime.now()
 date = str(now.strftime("%Y-%m-%d"))
 set_random_seed(42)
 
-
-def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
+def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs, batch_size):
     """
     Make RAENN model
 
@@ -54,9 +67,15 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
     encoded : keras.layer
         RAENN encoding layer
     """
-    input_1 = Input((None, nfilts*3+2))
-    input_2 = Input((maxlen*6, 3))
 
+    print("making model")
+    input_1 = Input((None, nfilts*3+1))
+    input_2 = Input((None, 1))
+    input_3 = Input((maxlen*6, 3))
+
+    gru_layer = JaxLayer(
+        **GRUHaiku(LSTMN)
+    )
     # make encoder and decoder models separately
     encoder = Sequential()
     encoder.add(
@@ -64,84 +83,87 @@ def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs):
             Dense(
                 LSTMN,
                 activation="leaky_relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
+                kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2),
             ),
             name="enc1"
         )
     )
-    encoder.add(
-        GRU(
-            LSTMN,
-            activation='tanh',
-            recurrent_activation='sigmoid',
-            return_sequences=False,
-            name="enc2",
-            #dropout=0.5,
-        )
-    )
+
+    encoder.add(gru_layer)
+
     
     # DECODER
     decoder = Sequential()
     decoder.add(
-        TimeDistributed(
-            Dense(
-                LSTMN,
-                activation="leaky_relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2)
-            ), name="dec1"
-        )
+        #TimeDistributed(
+        Dense(
+            LSTMN,
+            activation="leaky_relu",
+            kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2)
+        ), #name="dec1"
+        #)
     )
     decoder.add(
-        TimeDistributed(
-            Dense(
-                1,
-                activation="leaky_relu",
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2)
-            ), name="dec2"
-        )
+        #TimeDistributed(
+        Dense(
+            1,
+            #activation="leaky_relu",
+            #kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2)
+        ), #name="dec2"
+        #)
     )
     sampling = SamplingLayer()
     annealing = AnnealingCallback(sampling.beta,"cyclical",n_epochs)    
     encoded_mean_layer = Dense(
         encodingN, activation='linear', name="mu",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-1),
+        kernel_initializer=keras.initializers.RandomNormal(stddev=1e-1),
     )
     
     encoded_log_var_layer = Dense(
         encodingN, activation='linear', name="sigma",
-        kernel_initializer=tf.keras.initializers.RandomNormal(stddev=1e-2),
+        kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2),
     )
-    
-    encoded = encoder(input_1[:,:,:-1])
-    
+    #encoded = Dense(6)(input_1)
+    encoded = encoder(input_1)
+
     # add KL loss
-    encoded_mean = encoded_mean_layer(encoded)
-    encoded_log_var = encoded_log_var_layer(encoded)
-    encoded_sample = sampling([encoded_mean, encoded_log_var], True)
+    #encoded_mean = encoded_mean_layer(encoded)
+    #encoded_log_var = encoded_log_var_layer(encoded)
+    #encoded_sample = sampling([encoded_mean, encoded_log_var], add_loss=True)
     
     # This just outputs the same input, but adds a loss term
-    #encoded = SimilarityLossLayer()(encoded_sample, input_1)
-
-    repeater = RepeatVector(maxlen*6)(encoded_sample)
-    merged = concatenate([repeater, input_2], axis=-1)
-    decoded = decoder(merged)
+    #encoded = SimilarityLossLayer()(encoded_sample, input_2)
+    repeater = RepeatVector(maxlen*6)(encoded)[:,:183*6]
+    """
+    merged = concatenate([repeater, input_3], axis=-1)
+    """
+    decoded = decoder(repeater)
+    decoded = Reshape((-1,maxlen,6))(decoded)
+    #input_modified = input_1[:, :, 1:nfilts+1]
     
-    model = Model([input_1, input_2], decoded)
+    model = JAXModel([input_1, input_2, input_3], decoded)
 
-    new_optimizer = Adam(lr=1e-3, beta_1=0.9, beta_2=0.999)
+    new_optimizer = Adam(learning_rate=1e-3, beta_1=0.9, beta_2=0.999)
     
     rl = ReconstructionLoss(nfilts)
-    model.compile(optimizer=new_optimizer, loss=rl)
+    model.compile(
+        optimizer=new_optimizer,
+        loss=rl,
+        metrics=[
+            #sampling.kl_loss,
+            #sampling.beta,
+        ]
+    )
 
-    es = EarlyStopping(monitor='val_loss', min_delta=0, patience=50,
-                       verbose=0, mode='min', baseline=None,
-                       restore_best_weights=True)
+    #es = EarlyStopping(monitor='val_loss', min_delta=0, patience=50,
+    #                   verbose=0, mode='min', baseline=None,
+    #                   restore_best_weights=True)
 
-    callbacks_list = [es, annealing]
-    return model, callbacks_list, input_1, encoded
+    callbacks_list = []#annealing,]
+    return model, callbacks_list, input_1, None# encoded
 
 
-def fit_model(model, callbacks_list, sequence, outseq, n_epoch):
+def fit_model(model, callbacks_list, sequence, outseq, n_epoch, batch_size):
     """
     Make RAENN model
 
@@ -163,15 +185,18 @@ def fit_model(model, callbacks_list, sequence, outseq, n_epoch):
     model : keras.models.Model
         Trained keras model
     """
+    seq_ids = sequence[:,:,-1]
+    sequence = sequence[:,:,:-1]
+
     model.fit(
-        [sequence, outseq], sequence, epochs=n_epoch,  verbose=1,
+        [sequence, seq_ids, outseq], sequence, epochs=n_epoch, verbose=1,
         shuffle=True, callbacks=callbacks_list, validation_split=0.1,
-        batch_size=512
+        batch_size=batch_size
     )
     return model
 
 def get_encoder(model, input_1, encoded):
-    encoder = Model(input_1, encoded)
+    encoder = JAXModel(input_1, encoded)
     return encoder
 
 
@@ -179,7 +204,7 @@ def get_decoder(model, encodingN):
     encoded_input = Input(shape=(None, (encodingN+3)))
     decoder_layer2 = model.layers[-2]
     decoder_layer3 = model.layers[-1]
-    decoder = Model(encoded_input, decoder_layer3(decoder_layer2(encoded_input)))
+    decoder = JAXModel(encoded_input, decoder_layer3(decoder_layer2(encoded_input)))
     return decoder
 
 
@@ -218,10 +243,10 @@ def save_encodings(model, encoder, sequence, ids, INPUT_FILE,
 
     logging.info(f'Saved encodings to {model_dir}')
 
-
+"""
 def add_encoded_nodes(model_orig, n_epochs, n=1):
-    """Add extra nodes to the encoded means and encoded stddevs layers,
-    from a trained model."""
+    #Add extra nodes to the encoded means and encoded stddevs layers,
+    #from a trained model.
     encoder = model_orig.layers[1]
     LSTMN = encoder.layers[0].output.shape[-1]
     encodingN = model_orig.layers[2].output.shape[-1]
@@ -268,38 +293,34 @@ def add_encoded_nodes(model_orig, n_epochs, n=1):
     model.layers[8].layers[1].set_weights(l_weights[6])
     
     return model, callbacks_list, input_1, encoded
-
+"""
     
-def main():
-    parser = ArgumentParser()
-    parser.add_argument('lcfile', type=str, help='Light curve file')
-    parser.add_argument('--outdir', type=str, default='./products/',
-                        help='Path in which to save the LC data (single file)')
-    parser.add_argument('--plot', type=bool, default=False, help='Plot LCs')
-    parser.add_argument('--neuronN', type=int, default=NEURON_N_DEFAULT, help='Number of neurons in hidden layers')
-    parser.add_argument('--encodingN', type=int, default=ENCODING_N_DEFAULT,
-                        help='Number of neurons in encoding layer')
-    parser.add_argument('--n-epoch', type=int, dest='n_epoch',
-                        default=N_EPOCH_DEFAULT,
-                        help='Number of epochs to train for')
+def raenn_main():
 
-    args = parser.parse_args()
 
-    sequence, outseq, ids, maxlen, nfilts = prep_input(args.lcfile, save=True, outdir=args.outdir)
+    # minimal test
+    print("TEST")
+    test_input = np.random.normal(size=(10,10,10))
 
-    model, callbacks_list, input_1, encoded = make_model(args.neuronN,
-                                                         args.encodingN,
-                                                         maxlen, nfilts)
-    model = fit_model(model, callbacks_list, sequence, outseq, args.n_epoch)
-    encoder = get_encoder(model, input_1, encoded)
+    def test_func(x, y):
+        return x, y
+
+    x, y = jax.lax.scan(test_func, 1, test_input)
+    print(x, y)
+    print("DONE")
     
-    if args.outdir[-1] != '/':
-        args.outdir += '/'
-    save_model(model, args.encodingN, args.neuronN, outdir=args.outdir)
-
-    save_encodings(model, encoder, sequence, ids, args.lcfile,
-                   args.encodingN, args.neuronN, len(ids), maxlen,
-                   outdir=args.outdir)
+    model = GRUHaiku(5)
+    rng = jax.random.PRNGKey(0)
+    #model['init_fn'](rng)
+    #print("init")
+    #model['call_fn'](test_input)
+    gru_layer = JaxLayer(
+        **model
+    )
+    out = gru_layer(test_input)
+    print(out)
+    
+    
 
 
 if __name__ == '__main__':

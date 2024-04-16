@@ -11,7 +11,7 @@ from astropy import units as un
 
 from survey_agnostic_sn_vae.data_generation.utils import *
 
-LIMITING_MAGS = {'LSST': 23.867, 'ZTF': 20.433, 'PanSTARRS': 22.66}
+LIMITING_MAGS = {'LSST': 26.9, 'ZTF': 20.8, 'PanSTARRS': 23.3}
 AVG_UNCERTAINTIES = {'LSST': 0.1, 'ZTF': 0.2, 'PanSTARRS': 0.12}
     
 CONSTRAINT_FOLDER = os.path.join(

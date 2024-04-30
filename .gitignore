@@ -4,6 +4,10 @@ docs/notebooks/transients/
 docs/notebooks/superraenn/
 data/
 
+#notebooks
+docs/notebooks/*.ipynb
+src/survey_agnostic_sn_vae/data_generation/*.ipynb
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,327 +1,324 @@
-# lstm autoencoder recreate sequence
-from argparse import ArgumentParser
-from keras.models import Model, clone_model
-from keras.layers import Input, TimeDistributed
-from keras.layers import Dense, GRU, concatenate, Concatenate, JaxLayer
-from keras.layers import RepeatVector, Reshape
-from keras.optimizers import Adam
-from keras import Sequential, ops
-from keras import callbacks as callbacks_module
-
-import numpy as np
-import matplotlib.pyplot as plt
-import keras.backend as K
-from keras.callbacks import EarlyStopping
-import datetime
+# REMADE IN PYTORCH
 import os
+import torch
+import numpy as np
+from sklearn.model_selection import train_test_split
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
+from torchvision.utils import save_image, make_grid
+from torch.optim import Adam
 import logging
-from keras.utils import set_random_seed
-import keras
-import pretty_errors
-import math
-import jax
-
-from survey_agnostic_sn_vae.preprocessing import prep_input
-#from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
-from survey_agnostic_sn_vae.custom_nn_layers.kl_loss import SamplingLayer, AnnealingCallback
-from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLoss
-from survey_agnostic_sn_vae.custom_nn_layers.jax_gru import GRUHaiku
-from survey_agnostic_sn_vae.custom_nn_layers.custom_jax_model import JAXModel
-from survey_agnostic_sn_vae.custom_nn_layers.jax_epoch_iterator import JAXEpochIterator
-from survey_agnostic_sn_vae.custom_nn_layers import tree, array_slicing, data_adapter_utils
-
-
-
-from jax.lib import xla_bridge
-print(xla_bridge.get_backend().platform)
-#import jax
-#jax.config.update('jax_disable_jit', False)
+import datetime
 
 now = datetime.datetime.now()
 date = str(now.strftime("%Y-%m-%d"))
-set_random_seed(42)
 
-def make_model(LSTMN, encodingN, maxlen, nfilts, n_epochs, batch_size):
-    """
-    Make RAENN model
+DEFAULT_DEVICE = 'mps' # change to M1 GPU
+DEFAULT_HIDDEN = 100
+DEFAULT_LATENT = 10
+DEFAULT_BATCH = 1024
+DEFAULT_EPOCHS = 100
+DEFAULT_LR = 1e-4
 
-    Parameters
-    ----------
-    LSTMN : int
-        Number of neurons to use in first/last layers
-    encodingN : int
-        Number of neurons to use in encoding layer
-    maxlen : int
-        Maximum LC length
-    nfilts : int
-        Number of filters in LCs
+print(torch.backends.mps.is_available())
 
-    Returns
-    -------
-    model : keras.models.Model
-        RAENN model to be trained
-    callbacks_list : list
-        List of keras callbacks
-    input_1 : keras.layer
-        Input layer of RAENN
-    encoded : keras.layer
-        RAENN encoding layer
-    """
-
-    print("making model")
-    input_1 = Input((None, nfilts*3+1))
-    input_2 = Input((None, 1))
-    input_3 = Input((maxlen*6, 3))
-
-    gru_layer = JaxLayer(
-        **GRUHaiku(LSTMN)
+def loss_function(y_true, y_pred, nfilts, mean, log_var):
+    f_true = torch.narrow(y_true, 2, 1, nfilts)
+    err_true = torch.narrow(y_true, 2, nfilts+1, nfilts)
+    err_padding = torch.max(err_true[:,-1,-1])
+    tmp = torch.max(err_true, 2).values
+    idx_padding = torch.greater_equal(
+        tmp, err_padding * 0.9
+    ) # no more padding
+    idx_padding_reshaped = torch.unsqueeze(idx_padding, 2).repeat((1,1,nfilts))
+    reduced_mean = torch.mean(
+        torch.square((f_true - y_pred)/err_true)[idx_padding_reshaped]
     )
-    # make encoder and decoder models separately
-    encoder = Sequential()
-    encoder.add(
-        TimeDistributed(
-            Dense(
-                LSTMN,
-                activation="leaky_relu",
-                kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2),
-            ),
-            name="enc1"
+    loss = 0.5 * reduced_mean # way overweight
+        
+    KLD = - 0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
+
+    return loss + KLD
+
+
+class SNDataset(Dataset):
+    """Face Landmarks dataset."""
+
+    def __init__(self, sequence, outseq, device):
+        """
+        Arguments:
+            csv_file (string): Path to the csv file with annotations.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.input1 = torch.from_numpy(sequence).to(device)
+        self.input2 = torch.from_numpy(outseq).to(device)
+
+    def __len__(self):
+        return len(self.input1)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+            
+        return self.input1[idx], self.input2[idx]
+    
+
+class SelectItem(nn.Module):
+    def __init__(self, item_index):
+        super(SelectItem, self).__init__()
+        self._name = 'selectitem'
+        self.item_index = item_index
+
+    def forward(self, inputs):
+        return inputs[self.item_index]
+    
+    
+class TimeDistributed(nn.Module):
+    def __init__(self, module, batch_first=False):
+        super(TimeDistributed, self).__init__()
+        self.module = module
+        self.batch_first = batch_first
+
+    def forward(self, x):
+
+        if len(x.size()) <= 2:
+            return self.module(x)
+
+        # Squash samples and timesteps into a single axis
+        x_reshape = x.contiguous().view(-1, x.size(-1))  # (samples * timesteps, input_size)
+
+        y = self.module(x_reshape)
+
+        # We have to reshape Y
+        if self.batch_first:
+            y = y.contiguous().view(x.size(0), -1, y.size(-1))  # (samples, timesteps, output_size)
+        else:
+            y = y.view(-1, x.size(1), y.size(-1))  # (timesteps, samples, output_size)
+
+        return y
+    
+    
+class VAE(nn.Module):
+
+    def __init__(
+        self,
+        input_shape,
+        hidden_dim=DEFAULT_HIDDEN,
+        latent_dim=DEFAULT_LATENT,
+        device=DEFAULT_DEVICE
+    ):
+        super(VAE, self).__init__()
+
+        self.device = device
+        self.maxlen = input_shape[1]
+        self.input_dim = input_shape[2]
+        self.latent_dim = latent_dim
+        self.hidden_dim = hidden_dim
+        
+        # encoder
+        self.encoder = nn.Sequential(
+            TimeDistributed(nn.Linear(self.input_dim, hidden_dim), batch_first=True),
+            nn.LeakyReLU(0.2),
+            nn.GRU(hidden_dim, hidden_dim, batch_first=True),
+            SelectItem(1),
+            SelectItem(0),
+            nn.LeakyReLU(0.2)
         )
-    )
+        
+        # latent mean and variance 
+        self.mean_layer = nn.Linear(hidden_dim, latent_dim)
+        self.logvar_layer = nn.Linear(hidden_dim, latent_dim)
+        
+        self.out_dim = latent_dim + 3
+        # decoder
+        self.decoder = nn.Sequential(
+            TimeDistributed(nn.Linear(self.out_dim, hidden_dim), batch_first=True),
+            nn.LeakyReLU(0.2),
+            TimeDistributed(nn.Linear(hidden_dim, 1), batch_first=True),
+            nn.LeakyReLU(0.2),
+        )
+     
+    def encode(self, x):
+        x = self.encoder(x)
+        mean, logvar = self.mean_layer(x), self.logvar_layer(x)
+        return mean, logvar
 
-    encoder.add(gru_layer)
+    def reparameterization(self, mean, var):
+        epsilon = torch.randn_like(var).to(self.device)      
+        z = mean + var*epsilon
+        return z
 
+    def decode(self, x):
+        return self.decoder(x)
+
+    def forward(self, x1, x2):
+        mean, logvar = self.encode(x1)
+        stddev = torch.exp(0.5*logvar)
+        z = self.reparameterization(mean, stddev)
+        
+        # concat with x2
+        z = torch.reshape(z, (z.shape[0], 1, -1))
+        z_repeat = z.repeat((1, self.maxlen*6, 1))
+        merged = torch.concatenate([z_repeat, x2], axis=-1)
+        x_hat = self.decode(merged)
+        x_reshape = torch.reshape(x_hat, (-1, self.maxlen, 6))
+        return x_reshape, mean, logvar
     
-    # DECODER
-    decoder = Sequential()
-    decoder.add(
-        #TimeDistributed(
-        Dense(
-            LSTMN,
-            activation="leaky_relu",
-            kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2)
-        ), #name="dec1"
-        #)
-    )
-    decoder.add(
-        #TimeDistributed(
-        Dense(
-            1,
-            #activation="leaky_relu",
-            #kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2)
-        ), #name="dec2"
-        #)
-    )
-    sampling = SamplingLayer()
-    annealing = AnnealingCallback(sampling.beta,"cyclical",n_epochs)    
-    encoded_mean_layer = Dense(
-        encodingN, activation='linear', name="mu",
-        kernel_initializer=keras.initializers.RandomNormal(stddev=1e-1),
-    )
+    def save(self, outdir='./', model_dir='models/'):
+        model_dir = os.path.join(outdir, model_dir)
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+
+        torch.save(
+            self, os.path.join(
+                model_dir,
+                f"model_{date}_{self.latent_dim}_{self.hidden_dim}.pt"
+            )
+        )
+        torch.save(self, os.path.join(model_dir, "model.pt"))
+
+        logging.info(f'Saved model to {model_dir}')
+        
+    def save_outputs(self, dataset, ids=None, outdir='./', model_dir='outputs/'):
+        # Make output directory
+        model_dir = os.path.join(outdir, model_dir)
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        
+        data_loader = DataLoader(
+            dataset=dataset,
+            batch_size=64,
+            shuffle=False,
+        )
+            
+        decodings, z_means, z_logvars = evaluate(self, data_loader)
+        
+        decodings = decodings.cpu()
+        z_means = z_means.cpu()
+        z_logvars = z_logvars.cpu()
+        
+        np.savez(
+            os.path.join(
+                model_dir,
+                f"out_{date}_{self.latent_dim}_{self.hidden_dim}.npz"
+            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, ids=ids
+        )
+        np.savez(
+            os.path.join(
+                model_dir, "out.npz"
+            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, ids=ids
+        )
+        
+        logging.info(f'Saved outputs to {model_dir}')
     
-    encoded_log_var_layer = Dense(
-        encodingN, activation='linear', name="sigma",
-        kernel_initializer=keras.initializers.RandomNormal(stddev=1e-2),
-    )
-    #encoded = Dense(6)(input_1)
-    encoded = encoder(input_1)
 
-    # add KL loss
-    #encoded_mean = encoded_mean_layer(encoded)
-    #encoded_log_var = encoded_log_var_layer(encoded)
-    #encoded_sample = sampling([encoded_mean, encoded_log_var], add_loss=True)
+def evaluate(model, data_loader):
     
-    # This just outputs the same input, but adds a loss term
-    #encoded = SimilarityLossLayer()(encoded_sample, input_2)
-    repeater = RepeatVector(maxlen*6)(encoded)[:,:183*6]
-    """
-    merged = concatenate([repeater, input_3], axis=-1)
-    """
-    decoded = decoder(repeater)
-    decoded = Reshape((-1,maxlen,6))(decoded)
-    #input_modified = input_1[:, :, 1:nfilts+1]
+    x_hats, means, log_vars = None, None, None
     
-    model = JAXModel([input_1, input_2, input_3], decoded)
-
-    new_optimizer = Adam(learning_rate=1e-3, beta_1=0.9, beta_2=0.999)
-    
-    rl = ReconstructionLoss(nfilts)
-    model.compile(
-        optimizer=new_optimizer,
-        loss=rl,
-        metrics=[
-            #sampling.kl_loss,
-            #sampling.beta,
-        ]
-    )
-
-    #es = EarlyStopping(monitor='val_loss', min_delta=0, patience=50,
-    #                   verbose=0, mode='min', baseline=None,
-    #                   restore_best_weights=True)
-
-    callbacks_list = []#annealing,]
-    return model, callbacks_list, input_1, None# encoded
+    with torch.no_grad():
+        model.eval()
+        for (x1, x2) in data_loader:
+            x_hat, mean, log_var = model(x1, x2)
+            
+            if x_hats is None:
+                x_hats = x_hat
+                means = mean
+                log_vars = log_var
+            else:
+                x_hats = torch.cat((x_hat, x_hats))
+                means = torch.cat((means, mean))
+                log_vars = torch.cat((log_vars, log_var))     
+            
+    return x_hats, means, log_vars
 
 
-def fit_model(model, callbacks_list, sequence, outseq, n_epoch, batch_size):
-    """
-    Make RAENN model
+def train(
+    model, optimizer, train_loader,
+    test_loader, nfilts, epochs,
+):
+    train_len = len(train_loader.dataset)
+    test_len = len(test_loader.dataset)
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0
+        for batch_idx, (x1, x2) in enumerate(train_loader):
+            #x1 = x1.to(device, non_blocking=True)
+            #x2 = x2.to(device, non_blocking=True)
 
-    Parameters
-    ----------
-    model : keras.models.Model
-        RAENN model to be trained
-    callbacks_list : list
-        List of keras callbacks
-    sequence : numpy.ndarray
-        Array LC flux times, values and errors
-    outseq : numpy.ndarray
-        An array of LC flux values and limiting magnitudes
-    n_epoch : int
-        Number of epochs to train for
+            optimizer.zero_grad()
 
-    Returns
-    -------
-    model : keras.models.Model
-        Trained keras model
-    """
+            x_hat, mean, log_var = model(x1, x2)
+            loss = loss_function(x1, x_hat, nfilts, mean, log_var)
+            
+            train_loss += loss.item()
+            
+            loss.backward()
+            optimizer.step()
+            
+        # test loop
+        with torch.no_grad():
+            test_loss = 0
+            model.eval()
+            for test_batch_idx, (x1, x2) in enumerate(test_loader):
+                #x1 = x1.to(device, non_blocking=True)
+                #x2 = x2.to(device, non_blocking=True)
+                x_hat, mean, log_var = model(x1, x2)
+                loss = loss_function(x1, x_hat, nfilts, mean, log_var)
+                test_loss += loss.item()
+
+        print(
+            "\tEpoch",
+            epoch + 1,
+            "\tTrain Loss: ",
+            train_loss/train_len,
+            "\tVal Loss: ",
+            test_loss/test_len,
+        )
+    return train_loss/train_len, test_loss/test_len
+
+
+def fit_model(
+    model, sequence, outseq,
+    n_epochs=DEFAULT_EPOCHS,
+    learning_rate=DEFAULT_LR,
+    batch_size=DEFAULT_BATCH,
+    device=DEFAULT_DEVICE
+):
     seq_ids = sequence[:,:,-1]
     sequence = sequence[:,:,:-1]
-
-    model.fit(
-        [sequence, seq_ids, outseq], sequence, epochs=n_epoch, verbose=1,
-        shuffle=True, callbacks=callbacks_list, validation_split=0.1,
-        batch_size=batch_size
+    
+    nfilts = int((sequence.shape[-1] - 1) / 3) # TODO: change for filter width inclusion
+    input_dim = sequence.shape[1]
+    
+    train_seq, test_seq, train_out, test_out = train_test_split(sequence, outseq, test_size=0.2)
+    train_dataset = SNDataset(train_seq, train_out, device)
+    test_dataset = SNDataset(test_seq, test_out, device)
+    
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
     )
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    # TODO: set device = M1 gpu
+    model = model.to(device)
+    optimizer = Adam(model.parameters(), lr=learning_rate)
+    
+    train(
+        model, optimizer, train_loader, test_loader, nfilts,
+        epochs=n_epochs
+    )
+    
     return model
-
-def get_encoder(model, input_1, encoded):
-    encoder = JAXModel(input_1, encoded)
-    return encoder
-
-
-def get_decoder(model, encodingN):
-    encoded_input = Input(shape=(None, (encodingN+3)))
-    decoder_layer2 = model.layers[-2]
-    decoder_layer3 = model.layers[-1]
-    decoder = JAXModel(encoded_input, decoder_layer3(decoder_layer2(encoded_input)))
-    return decoder
-
-
-def get_decodings(model, sequence, outseq):
-    decodings = model([sequence, outseq])
-    return decodings
-
-
-def save_model(model, encodingN, LSTMN, model_dir='models/', outdir='./'):
-    # make output dir
-    model_dir = outdir + model_dir
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
-    model.save(model_dir+"model_"+date+"_"+str(encodingN)+'_'+str(LSTMN)+".h5")
-    model.save(model_dir+"model.h5")
-
-    logging.info(f'Saved model to {model_dir}')
-
-
-def save_encodings(model, encoder, sequence, ids, INPUT_FILE,
-                   encodingN, LSTMN, N, sequence_len,
-                   model_dir='encodings/', outdir='./'):
-
-    # Make output directory
-    model_dir = outdir + model_dir
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
-    encodings = encoder(sequence)
-    encoder.reset_states()
-
-    encoder_sne_file = model_dir+'en_'+date+'_'+str(encodingN)+'_'+str(LSTMN)+'.npz'
-    np.savez(encoder_sne_file, encodings=encodings, ids=ids, INPUT_FILE=INPUT_FILE)
-    np.savez(model_dir+'en.npz', encodings=encodings, ids=ids, INPUT_FILE=INPUT_FILE)
-
-    logging.info(f'Saved encodings to {model_dir}')
-
-"""
-def add_encoded_nodes(model_orig, n_epochs, n=1):
-    #Add extra nodes to the encoded means and encoded stddevs layers,
-    #from a trained model.
-    encoder = model_orig.layers[1]
-    LSTMN = encoder.layers[0].output.shape[-1]
-    encodingN = model_orig.layers[2].output.shape[-1]
-    maxlen = int(model_orig.layers[5].output.shape[1] / 6)
-    #maxlen = 0
-    
-    l_weights = [model_orig.layers[0].get_weights(),]
-    
-    for subl in model_orig.layers[1].layers:
-        l_weights.append(
-            subl.get_weights()
-        )
-    
-    # expand mu and sigma weights
-    mu_weights = model_orig.layers[2].get_weights()
-    sig_weights = model_orig.layers[3].get_weights()
-    
-    mu_weights[0] = tf.concat([mu_weights[0], tf.random.normal((LSTMN, n), stddev=1e-5)], axis=-1)
-    mu_weights[1] = tf.concat([mu_weights[1], tf.random.normal([n,], stddev=1e-5)], axis=0)
-    sig_weights[0] = tf.concat([sig_weights[0], tf.random.normal((LSTMN, n), stddev=1e-5)], axis=-1)
-    sig_weights[1] = tf.concat([sig_weights[1], tf.random.normal([n,], stddev=1e-5)], axis=0)
-    
-    l_weights.append(mu_weights)
-    l_weights.append(sig_weights)
-    
-    # expand Sequential layer
-    dec1_weights = model_orig.layers[8].layers[0].get_weights()
-    dec1_weights[0] = tf.concat([dec1_weights[0], tf.random.normal((n, LSTMN), stddev=1e-5)], axis=-2)
-    #dec1_weights[1] = tf.concat([dec1_weights[1], tf.random.normal(n)])
-    
-    l_weights.append(dec1_weights)
-    l_weights.append(model_orig.layers[8].layers[1].get_weights())
-    
-    # make model accomodating for bigger encoded layer
-    model, callbacks_list, input_1, encoded = make_model(LSTMN, encodingN+n, maxlen, 6, n_epochs)
-    
-    # transfer weights!
-    #model.layers[0].set_weights(l_weights[0])
-    model.layers[1].layers[0].set_weights(l_weights[1])
-    model.layers[1].layers[1].set_weights(l_weights[2])
-    model.layers[2].set_weights(l_weights[3])
-    model.layers[3].set_weights(l_weights[4])
-    model.layers[8].layers[0].set_weights(l_weights[5])
-    model.layers[8].layers[1].set_weights(l_weights[6])
-    
-    return model, callbacks_list, input_1, encoded
-"""
-    
-def raenn_main():
-
-
-    # minimal test
-    print("TEST")
-    test_input = np.random.normal(size=(10,10,10))
-
-    def test_func(x, y):
-        return x, y
-
-    x, y = jax.lax.scan(test_func, 1, test_input)
-    print(x, y)
-    print("DONE")
-    
-    model = GRUHaiku(5)
-    rng = jax.random.PRNGKey(0)
-    #model['init_fn'](rng)
-    #print("init")
-    #model['call_fn'](test_input)
-    gru_layer = JaxLayer(
-        **model
-    )
-    out = gru_layer(test_input)
-    print(out)
-    
     
 
-
-if __name__ == '__main__':
-    main()
+    

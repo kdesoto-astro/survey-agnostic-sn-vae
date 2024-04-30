@@ -1,7 +1,6 @@
 import os, glob
 import numpy as np
 import datetime
-import jax.numpy as jnp
 
 from survey_agnostic_sn_vae.data_generation.utils import *
 from survey_agnostic_sn_vae.data_generation.objects import Transient
@@ -412,4 +411,4 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         model_prep_file = os.path.join(outdir,'prep.npz')
         np.savez(model_prep_file, wavemin=wavemin, wavemax=wavemax, bandmin=bandmin, bandmax=bandmax)
 
-    return jnp.array(sequence, dtype=jnp.float32), jnp.array(outseq_tiled, dtype=jnp.float32), ids, sequence_len, nfilts
+    return np.array(sequence, dtype=np.float32), np.array(outseq_tiled, dtype=np.float32), ids, sequence_len, nfilts

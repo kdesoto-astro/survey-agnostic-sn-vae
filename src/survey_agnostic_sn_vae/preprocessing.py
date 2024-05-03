@@ -270,8 +270,11 @@ def generate_superraenn_lc_file(
             filt_dict = {f: i for i, f in enumerate(lc.bands)}
 
             sr_lc.wavelengths = np.zeros(len(lc.bands))
+            sr_lc.filt_widths = np.zeros(len(lc.bands))
+            
             for f in filt_dict:
                 sr_lc.wavelengths[filt_dict[f]] = lc.survey.band_wavelengths[f]
+                sr_lc.filt_widths[filt_dict[f]] = lc.survey.band_widths[f]
                 
             sr_lc.filter_names_to_numbers(filt_dict)
             sr_lc.cut_lc()
@@ -291,6 +294,9 @@ def generate_superraenn_lc_file(
                 sr_lc.wavelengths = np.repeat(
                     sr_lc.wavelengths, tile_factor,
                 )
+                sr_lc.filt_widths = np.repeat(
+                    sr_lc.filt_widths, tile_factor,
+                )
                 
             elif len(lc.bands) < 6:
                 sr_lc.dense_lc = np.repeat(
@@ -299,6 +305,9 @@ def generate_superraenn_lc_file(
                 )[:,:6,:]
                 sr_lc.wavelengths = np.repeat(
                     sr_lc.wavelengths, 2
+                )[:6]
+                sr_lc.filt_widths = np.repeat(
+                    sr_lc.filt_widths, 2
                 )[:6]
                 
             sr_lcs.append(sr_lc)

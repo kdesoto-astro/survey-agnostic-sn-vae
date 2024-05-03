@@ -24,7 +24,46 @@ DEFAULT_LR = 1e-4
 
 print(torch.backends.mps.is_available())
 
-def loss_function(y_true, y_pred, nfilts, mean, log_var):
+
+def contrastive_loss(samples, ids, distance='cosine', temp=1.0):
+    """Pushes multiple views of the same
+    object together in the latent space.
+    """
+    # samples is the latent variables
+    S_i = torch.expand_dims(samples, 0).repeat((samples.shape[0],1,1))
+    S_j = torch.transpose(S_i, 0, 1)
+
+    # make "adjacency matrix" type thing for object IDs
+    objid_mat = torch.expand_dims(ids, 0).repeat((ids.shape[0],1,1))
+    objid_bool_mat = torch.logical_not(
+        torch.equal(objid_mat, torch.transpose(objid_mat,0,1))
+    )
+
+    # Distance for object IDs is 0 if they're the same and 1 otherwise
+    objid_dist = objid_bool_mat.type(torch.float32)
+
+    # SOFT NEAREST NEIGHBORS LOSS
+    #if distance == 'dot': # dot product between positive samples
+    #    num = objid_dist * S_ij 
+    if distance == 'cosine':
+        cos_sim = nn.CosineSimilarity(dim=-1, eps=1e-6)
+        dists = cos_sim(S_i, S_j)
+    else:
+        raise ValueError(f"distance metric {distance} not implemented!")
+        
+    exp_sims = torch.exp(dists / temp)
+    num = torch.sum(objid_dist * exp_sims, dim=1)
+    denom = torch.sum(exp_sims, dim=1)
+    return -1 * torch.sum(
+        torch.log(num / denom)
+    ) / len(samples)
+        
+    
+def loss_function(
+    y_true, y_pred, nfilts,
+    mean, log_var, samples, ids,
+    add_kl=False, add_contrastive=False
+):
     f_true = torch.narrow(y_true, 2, 1, nfilts)
     err_true = torch.narrow(y_true, 2, nfilts+1, nfilts)
     err_padding = torch.max(err_true[:,-1,-1])
@@ -38,7 +77,10 @@ def loss_function(y_true, y_pred, nfilts, mean, log_var):
     )
     loss = 0.5 * reduced_mean # way overweight
         
-    KLD = - 0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
+    if add_kl:
+        loss += - 0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
+    if add_contrastive:
+        loss += contrastive_loss(samples, ids)
 
     return loss + KLD
 
@@ -161,12 +203,12 @@ class VAE(nn.Module):
         z = self.reparameterization(mean, stddev)
         
         # concat with x2
-        z = torch.reshape(z, (z.shape[0], 1, -1))
-        z_repeat = z.repeat((1, self.maxlen*6, 1))
+        z_reshape = torch.reshape(z, (z.shape[0], 1, -1))
+        z_repeat = z_reshape.repeat((1, self.maxlen*6, 1))
         merged = torch.concatenate([z_repeat, x2], axis=-1)
         x_hat = self.decode(merged)
         x_reshape = torch.reshape(x_hat, (-1, self.maxlen, 6))
-        return x_reshape, mean, logvar
+        return x_reshape, z, mean, logvar
     
     def save(self, outdir='./', model_dir='models/'):
         model_dir = os.path.join(outdir, model_dir)
@@ -240,20 +282,23 @@ def evaluate(model, data_loader):
 def train(
     model, optimizer, train_loader,
     test_loader, nfilts, epochs,
+    add_kl=True, add_contrastive=True
 ):
     train_len = len(train_loader.dataset)
     test_len = len(test_loader.dataset)
     for epoch in range(epochs):
         model.train()
         train_loss = 0
-        for batch_idx, (x1, x2) in enumerate(train_loader):
-            #x1 = x1.to(device, non_blocking=True)
-            #x2 = x2.to(device, non_blocking=True)
+        for batch_idx, (x1, x2, x3) in enumerate(train_loader):
 
             optimizer.zero_grad()
 
-            x_hat, mean, log_var = model(x1, x2)
-            loss = loss_function(x1, x_hat, nfilts, mean, log_var)
+            x_hat, z, mean, log_var = model(x1, x2)
+            loss = loss_function(
+                x1, x_hat, nfilts,
+                mean, log_var, z, x3,
+                add_kl=True, add_contrastive=True
+            )
             
             train_loss += loss.item()
             
@@ -265,9 +310,7 @@ def train(
             test_loss = 0
             model.eval()
             for test_batch_idx, (x1, x2) in enumerate(test_loader):
-                #x1 = x1.to(device, non_blocking=True)
-                #x2 = x2.to(device, non_blocking=True)
-                x_hat, mean, log_var = model(x1, x2)
+                x_hat, z, mean, log_var = model(x1, x2)
                 loss = loss_function(x1, x_hat, nfilts, mean, log_var)
                 test_loss += loss.item()
 

@@ -30,13 +30,13 @@ def contrastive_loss(samples, ids, distance='cosine', temp=1.0):
     object together in the latent space.
     """
     # samples is the latent variables
-    S_i = torch.expand_dims(samples, 0).repeat((samples.shape[0],1,1))
+    S_i = torch.unsqueeze(samples, 0).repeat((samples.shape[0],1,1))
     S_j = torch.transpose(S_i, 0, 1)
 
     # make "adjacency matrix" type thing for object IDs
-    objid_mat = torch.expand_dims(ids, 0).repeat((ids.shape[0],1,1))
+    objid_mat = torch.unsqueeze(ids, 0).repeat((ids.shape[0],1,1))
     objid_bool_mat = torch.logical_not(
-        torch.equal(objid_mat, torch.transpose(objid_mat,0,1))
+        torch.eq(objid_mat, torch.transpose(objid_mat,0,1))
     )
 
     # Distance for object IDs is 0 if they're the same and 1 otherwise
@@ -71,24 +71,35 @@ def loss_function(
     idx_padding = torch.greater_equal(
         tmp, err_padding * 0.9
     ) # no more padding
+    
     idx_padding_reshaped = torch.unsqueeze(idx_padding, 2).repeat((1,1,nfilts))
+    
     reduced_mean = torch.mean(
-        torch.square((f_true - y_pred)/err_true)[idx_padding_reshaped]
+        torch.square((f_true - y_pred)/err_true)[~idx_padding_reshaped]
     )
+
+    """
+    print(
+        torch.mean(f_true[~idx_padding_reshaped]),
+        torch.mean(y_pred[~idx_padding_reshaped]),
+        torch.mean(err_true[~idx_padding_reshaped]),
+    )
+    """
+        
     loss = 0.5 * reduced_mean # way overweight
         
     if add_kl:
-        loss += - 0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
+        loss += - 0.5 * torch.mean(1 + log_var - mean.pow(2) - log_var.exp())
     if add_contrastive:
         loss += contrastive_loss(samples, ids)
 
-    return loss + KLD
+    return loss
 
 
 class SNDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, sequence, outseq, device):
+    def __init__(self, sequence, outseq, obj_ids, device):
         """
         Arguments:
             csv_file (string): Path to the csv file with annotations.
@@ -98,6 +109,7 @@ class SNDataset(Dataset):
         """
         self.input1 = torch.from_numpy(sequence).to(device)
         self.input2 = torch.from_numpy(outseq).to(device)
+        self.input3 = torch.from_numpy(obj_ids).to(device)
 
     def __len__(self):
         return len(self.input1)
@@ -106,7 +118,7 @@ class SNDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
             
-        return self.input1[idx], self.input2[idx]
+        return self.input1[idx], self.input2[idx], self.input3[idx]
     
 
 class SelectItem(nn.Module):
@@ -164,24 +176,24 @@ class VAE(nn.Module):
         # encoder
         self.encoder = nn.Sequential(
             TimeDistributed(nn.Linear(self.input_dim, hidden_dim), batch_first=True),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.01),
             nn.GRU(hidden_dim, hidden_dim, batch_first=True),
             SelectItem(1),
             SelectItem(0),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.01)
         )
         
         # latent mean and variance 
         self.mean_layer = nn.Linear(hidden_dim, latent_dim)
         self.logvar_layer = nn.Linear(hidden_dim, latent_dim)
         
-        self.out_dim = latent_dim + 3
+        self.out_dim = latent_dim + 4
         # decoder
         self.decoder = nn.Sequential(
             TimeDistributed(nn.Linear(self.out_dim, hidden_dim), batch_first=True),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.01),
             TimeDistributed(nn.Linear(hidden_dim, 1), batch_first=True),
-            nn.LeakyReLU(0.2),
+            nn.LeakyReLU(0.01),
         )
      
     def encode(self, x):
@@ -197,17 +209,24 @@ class VAE(nn.Module):
     def decode(self, x):
         return self.decoder(x)
 
+    def merge(self, z, x2):
+        z_reshape = torch.reshape(z, (z.shape[0], 1, -1))
+        z_repeat = z_reshape.repeat((1, self.maxlen*6, 1))
+        return torch.concatenate([z_repeat, x2], axis=-1)
+        
+    def reshape_decoding(self, x):
+        x_reshape = torch.reshape(x, (-1, self.maxlen, 6))
+        return x_reshape
+        
     def forward(self, x1, x2):
         mean, logvar = self.encode(x1)
         stddev = torch.exp(0.5*logvar)
         z = self.reparameterization(mean, stddev)
         
-        # concat with x2
-        z_reshape = torch.reshape(z, (z.shape[0], 1, -1))
-        z_repeat = z_reshape.repeat((1, self.maxlen*6, 1))
-        merged = torch.concatenate([z_repeat, x2], axis=-1)
+        merged = self.merge(z, x2)
         x_hat = self.decode(merged)
-        x_reshape = torch.reshape(x_hat, (-1, self.maxlen, 6))
+        x_reshape = self.reshape_decoding(x_hat)
+        
         return x_reshape, z, mean, logvar
     
     def save(self, outdir='./', model_dir='models/'):
@@ -264,8 +283,8 @@ def evaluate(model, data_loader):
     
     with torch.no_grad():
         model.eval()
-        for (x1, x2) in data_loader:
-            x_hat, mean, log_var = model(x1, x2)
+        for (x1, x2, x3) in data_loader:
+            x_hat, z, mean, log_var = model(x1, x2)
             
             if x_hats is None:
                 x_hats = x_hat
@@ -284,8 +303,6 @@ def train(
     test_loader, nfilts, epochs,
     add_kl=True, add_contrastive=True
 ):
-    train_len = len(train_loader.dataset)
-    test_len = len(test_loader.dataset)
     for epoch in range(epochs):
         model.train()
         train_loss = 0
@@ -297,7 +314,7 @@ def train(
             loss = loss_function(
                 x1, x_hat, nfilts,
                 mean, log_var, z, x3,
-                add_kl=True, add_contrastive=True
+                add_kl=add_kl, add_contrastive=add_contrastive
             )
             
             train_loss += loss.item()
@@ -309,20 +326,25 @@ def train(
         with torch.no_grad():
             test_loss = 0
             model.eval()
-            for test_batch_idx, (x1, x2) in enumerate(test_loader):
+            for test_batch_idx, (x1, x2, x3) in enumerate(test_loader):
                 x_hat, z, mean, log_var = model(x1, x2)
-                loss = loss_function(x1, x_hat, nfilts, mean, log_var)
+                loss = loss_function(
+                    x1, x_hat, nfilts,
+                    mean, log_var, z, x3,
+                    add_kl=add_kl, add_contrastive=add_contrastive
+                )
                 test_loss += loss.item()
 
-        print(
-            "\tEpoch",
-            epoch + 1,
-            "\tTrain Loss: ",
-            train_loss/train_len,
-            "\tVal Loss: ",
-            test_loss/test_len,
-        )
-    return train_loss/train_len, test_loss/test_len
+        if epoch % 50 == 0:
+            print(
+                "\tEpoch",
+                epoch + 1,
+                "\tTrain Loss: ",
+                train_loss/len(train_loader),
+                "\tVal Loss: ",
+                test_loss/len(test_loader)
+            )
+    return train_loss/len(train_loader), test_loss/len(test_loader)
 
 
 def fit_model(
@@ -330,17 +352,20 @@ def fit_model(
     n_epochs=DEFAULT_EPOCHS,
     learning_rate=DEFAULT_LR,
     batch_size=DEFAULT_BATCH,
-    device=DEFAULT_DEVICE
+    device=DEFAULT_DEVICE,
+    add_kl=True,
+    add_contrastive=True,
 ):
-    seq_ids = sequence[:,:,-1]
+    seq_ids = sequence[:,0,-1]
     sequence = sequence[:,:,:-1]
     
-    nfilts = int((sequence.shape[-1] - 1) / 3) # TODO: change for filter width inclusion
+    nfilts = int((sequence.shape[-1] - 1) / 4) # TODO: change for filter width inclusion
     input_dim = sequence.shape[1]
     
-    train_seq, test_seq, train_out, test_out = train_test_split(sequence, outseq, test_size=0.2)
-    train_dataset = SNDataset(train_seq, train_out, device)
-    test_dataset = SNDataset(test_seq, test_out, device)
+    train_seq, test_seq, train_out, test_out, train_id, test_id = train_test_split(
+        sequence, outseq, seq_ids, test_size=0.2)
+    train_dataset = SNDataset(train_seq, train_out, train_id, device)
+    test_dataset = SNDataset(test_seq, test_out, test_id, device)
     
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -358,7 +383,7 @@ def fit_model(
     
     train(
         model, optimizer, train_loader, test_loader, nfilts,
-        epochs=n_epochs
+        epochs=n_epochs, add_kl=add_kl, add_contrastive=add_contrastive
     )
     
     return model

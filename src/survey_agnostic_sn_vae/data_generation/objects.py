@@ -27,6 +27,11 @@ FILT_WIDTHS = np.load(
     os.path.join(dir_path,"filter_widths_Angstroms.npz"),
     allow_pickle=True
 )['widths'].item()
+
+FILT_LIM_MAGS = np.load(
+    os.path.join(dir_path,"filter_widths_Angstroms.npz"),
+    allow_pickle=True
+)['widths'].item() # CHANGE TO WHATEVER HERE
     
 CONSTRAINT_FOLDER = os.path.join(
     pathlib.Path(__file__).parent.resolve(),
@@ -74,10 +79,8 @@ class ModelConstraints:
 class Survey:
     def __init__(self, name, bands, cadence):
         self.name = name
-        self.limiting_magnitude = None
         self.avg_uncertainty = 0.1
-        if self.name in LIMITING_MAGS.keys():
-            self.limiting_magnitude = LIMITING_MAGS[self.name]
+        if self.name in AVG_UNCERTAINTIES.keys():
             self.avg_uncertainty = AVG_UNCERTAINTIES[self.name]
             
         self.bands = bands
@@ -88,7 +91,10 @@ class Survey:
         self.band_widths = {
             k: FILT_WIDTHS[f"{self.name} {k}"] for k in self.bands
         }
-        
+        self.lim_mag_dict = {
+            k: FILT_LIM_MAGS[f"{self.name} {k}"] for k in self.bands
+        }
+        # take average
         orig_path = os.getcwd()
     
         mosfit_path = os.path.dirname(
@@ -104,7 +110,6 @@ class Survey:
                 models=['slsn'],
                 max_time=500.0,
                 iterations=0,
-                limiting_magnitude = self.limiting_magnitude,
                 write=False,
                 time_list=[1,2],
                 band_list=self.bands,
@@ -403,7 +408,7 @@ class LightCurve:
         """Remove points according to limiting magnitude.
         """
         for b in self.bands:
-            keep_idx = (self.mag[b] < self.survey.limiting_magnitude)
+            keep_idx = (self.mag[b] < self.survey.lim_mag_dict)
             self.times[b] = self.times[b][keep_idx]
             self.mag[b] = self.mag[b][keep_idx]
             self.mag_err[b] = self.mag_err[b][keep_idx]

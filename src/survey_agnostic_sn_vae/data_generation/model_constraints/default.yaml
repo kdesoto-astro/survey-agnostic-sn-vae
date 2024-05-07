@@ -1,0 +1,5 @@
+kappa: 0.1
+kappagamma: 1000
+temperature: 3000
+codeltatime: 0.001
+doeltalambda: 0.1

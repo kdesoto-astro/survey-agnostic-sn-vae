@@ -11,8 +11,22 @@ from astropy import units as un
 
 from survey_agnostic_sn_vae.data_generation.utils import *
 
-LIMITING_MAGS = {'LSST': 26.9, 'ZTF': 20.8, 'PanSTARRS': 23.3}
-AVG_UNCERTAINTIES = {'LSST': 0.1, 'ZTF': 0.2, 'PanSTARRS': 0.12}
+LIMITING_MAGS = {
+    'LSST': 26.9, 'ZTF': 20.8,
+    'PanSTARRS': 23.3, '2MASS': 15.8, 
+    'Swift': 22.3,
+}
+AVG_UNCERTAINTIES = {
+    'LSST': 0.1, 'ZTF': 0.2,
+    'PanSTARRS': 0.12, '2MASS': 0.4,
+    'Swift': 0.14
+}
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+FILT_WIDTHS = np.load(
+    os.path.join(dir_path,"filter_widths_Angstroms.npz"),
+    allow_pickle=True
+)['widths'].item()
     
 CONSTRAINT_FOLDER = os.path.join(
     pathlib.Path(__file__).parent.resolve(),
@@ -43,7 +57,6 @@ class ModelConstraints:
         for c in default_constraints:
             self.model_constraints[c] = default_constraints[c]
             
-        print(self.model_constraints)
         
     def to_list(self):
         """Convert model constraints to list to feed into
@@ -55,7 +68,6 @@ class ModelConstraints:
             model_list.append(c)
             model_list.append(self.model_constraints[c])
             
-        print(model_list)
         return model_list
         
         
@@ -72,11 +84,16 @@ class Survey:
         self.cadence = cadence
         self.band_wavelengths = {}
         
+        # add filter widths
+        self.band_widths = {
+            k: FILT_WIDTHS[f"{self.name} {k}"] for k in self.bands
+        }
+        
         orig_path = os.getcwd()
     
         mosfit_path = os.path.dirname(
-        os.path.realpath(mosfit.__file__)
-    )
+            os.path.realpath(mosfit.__file__)
+        )
 
         print("Switching to MOSFIT path: %s" % mosfit_path)
         os.chdir(mosfit_path)
@@ -132,7 +149,6 @@ class Survey:
                 small_offsets = np.clip(small_offsets, a_min=0.25, a_max=0.25)
 
                 times[b] = times[ref_band] + small_offsets
-                print(times[b])
 
                 times[b] = times[b][times[b] < final_time]
                 
@@ -146,7 +162,6 @@ class Survey:
                 small_offsets = np.random.normal(scale=0.1, size=max_points)
                 times[b] = self.cadence[b] + day_offset + small_offsets
                 times[b] = np.cumsum(times[b])
-                print(times[b])
                 times[b] = times[b][times[b] < final_time]
                 
         t_list = []
@@ -234,8 +249,7 @@ class Transient:
             transient_id=self.obj_id
         )
         lc.add_noise()
-        lc.apply_limiting_mag()
-        
+        lc.apply_limiting_mag()        
         self.lightcurves.append(lc)
         
     def save(self, output_dir):
@@ -275,7 +289,6 @@ class LightCurve:
         self.transient_id = transient_id
         
         self.bands = np.asarray(list(mag.keys()))
-        print(self.bands)
         if mag.keys() != mag_err.keys():
             raise ValueError(
                 "Make sure mag and mag err have the same bands"

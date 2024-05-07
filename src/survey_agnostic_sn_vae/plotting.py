@@ -4,7 +4,9 @@ import numpy as np
 SURVEY_SYMBOLS = {
     'LSST': '_',
     'ZTF': '^',
-    'PanSTARRS': '*'
+    'PanSTARRS': '*',
+    '2MASS': '+',
+    'Swift': 'o'
 }
 BAND_COLORS = {
     'u': 'blue',
@@ -12,13 +14,24 @@ BAND_COLORS = {
     'r': 'orange',
     'i': 'red',
     'z': 'pink',
-    'y': 'purple'
+    'y': 'purple',
+    'w': 'gray',
+    'B': 'cyan',
+    'U': 'magenta',
+    'UVM2': 'yellow',
+    'UVW1': 'chartreuse',
+    'UVW2':  'gold',
+    'V': 'teal',
+    'H': 'brown',
+    'J': 'maroon',
+    'Ks': 'navy'
 }
 
 def plot_lightcurves(transient, save_path, surveys=None):
     """Overlay all light curves listed in `surveys'
     for one transient in a single plot.
     """
+    print(len(transient.lightcurves))
     if surveys is None:
         lcs = transient.lightcurves
     else:

@@ -29,9 +29,9 @@ FILT_WIDTHS = np.load(
 )['widths'].item()
 
 FILT_LIM_MAGS = np.load(
-    os.path.join(dir_path,"filter_widths_Angstroms.npz"),
+    os.path.join(dir_path,"lim_mags.npz"),
     allow_pickle=True
-)['widths'].item() # CHANGE TO WHATEVER HERE
+)['lim_mags'].item() # CHANGE TO WHATEVER HERE
     
 CONSTRAINT_FOLDER = os.path.join(
     pathlib.Path(__file__).parent.resolve(),

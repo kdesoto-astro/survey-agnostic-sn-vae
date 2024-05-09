@@ -8,6 +8,54 @@ from survey_agnostic_sn_vae.data_generation.objects import *
 from survey_agnostic_sn_vae.data_generation.utils import *
 
 
+"""
+lsst_cadence = {
+    'u': 25.0,
+    'g': 17.0,
+    'r': 6.0,
+    'i': 7.0,
+    'z': 8.0,
+    'y': 8.0
+}
+
+panstarrs_cadence = {b: 3.0 for b in ['g', 'r', 'i', 'z']}
+"""
+lsst_survey = Survey(
+    'LSST',
+    ['u', 'g', 'r', 'i', 'z', 'y'],
+    4.0
+)
+ztf_survey = Survey(
+    'ZTF',
+    ['g', 'r'],
+    2.0 # band sampling coupled
+)
+panstarrs_survey = Survey(
+    'PanSTARRS',
+    ['g', 'r', 'i', 'z'],
+    3.0
+)
+
+swift_survey = Survey(
+    'Swift',
+    ['B', 'UVM2', 'UVW1', 'UVW2', 'U', 'V'],
+    5.0
+)
+
+twomass_survey = Survey(
+    '2MASS',
+    ['H', 'J', 'Ks'],
+    6.0
+)
+
+def gen_single_core(i):
+    generate_LCs_from_model(
+        'default',
+        [lsst_survey, ztf_survey, panstarrs_survey, swift_survey, twomass_survey],
+        1000,
+        output_path=os.getcwd()
+    )
+    
 def generate_LCs_from_model(
     model_type: str,
     survey_list: List[Survey],

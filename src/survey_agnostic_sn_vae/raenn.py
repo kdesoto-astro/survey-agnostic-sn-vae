@@ -60,34 +60,21 @@ def contrastive_loss(samples, ids, distance='cosine', temp=1.0):
         
     
 def loss_function(
-    y_true, y_pred, nfilts,
+    y_true, y_pred, loss_mask, nfilts,
     mean, log_var, samples, ids,
     add_kl=False, add_contrastive=False
 ):
-    f_true = torch.narrow(y_true, 2, 1, nfilts)
-    err_true = torch.narrow(y_true, 2, nfilts+1, nfilts)
-    err_padding = torch.max(err_true[:,-1,-1])
-    tmp = torch.max(err_true, 2).values
-    idx_padding = torch.greater_equal(
-        tmp, err_padding * 0.9
-    ) # no more padding
+    # mask out 
+    f_true = y_true[:,:,1:nfilts+1]
+    err_true = y_true[:,:,1+nfilts:1+2*nfilts]
     
-    idx_padding_reshaped = torch.unsqueeze(idx_padding, 2).repeat((1,1,nfilts))
-    
-    reduced_mean = torch.mean(
-        torch.square((f_true - y_pred)/err_true)[~idx_padding_reshaped]
+    mean_per_lc = torch.mean(
+        torch.square((f_true - y_pred)/err_true)[~loss_mask]
     )
+    
+    reduced_mean = torch.mean(mean_per_lc)
+    loss = 2.0 * reduced_mean #over-weight the recon loss
 
-    """
-    print(
-        torch.mean(f_true[~idx_padding_reshaped]),
-        torch.mean(y_pred[~idx_padding_reshaped]),
-        torch.mean(err_true[~idx_padding_reshaped]),
-    )
-    """
-        
-    loss = 0.5 * reduced_mean # way overweight
-        
     if add_kl:
         loss += - 0.5 * torch.mean(1 + log_var - mean.pow(2) - log_var.exp())
     if add_contrastive:
@@ -99,7 +86,7 @@ def loss_function(
 class SNDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, sequence, outseq, obj_ids, device):
+    def __init__(self, sequence, outseq, obj_ids, loss_mask, device):
         """
         Arguments:
             csv_file (string): Path to the csv file with annotations.
@@ -110,6 +97,7 @@ class SNDataset(Dataset):
         self.input1 = torch.from_numpy(sequence).to(device)
         self.input2 = torch.from_numpy(outseq).to(device)
         self.input3 = torch.from_numpy(obj_ids).to(device)
+        self.input4 = torch.from_numpy(loss_mask).bool().to(device)
 
     def __len__(self):
         return len(self.input1)
@@ -118,7 +106,7 @@ class SNDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
             
-        return self.input1[idx], self.input2[idx], self.input3[idx]
+        return self.input1[idx], self.input2[idx], self.input3[idx], self.input4[idx]
     
 
 class SelectItem(nn.Module):
@@ -283,7 +271,7 @@ def evaluate(model, data_loader):
     
     with torch.no_grad():
         model.eval()
-        for (x1, x2, x3) in data_loader:
+        for (x1, x2, x3, x4) in data_loader:
             x_hat, z, mean, log_var = model(x1, x2)
             
             if x_hats is None:
@@ -306,13 +294,13 @@ def train(
     for epoch in range(epochs):
         model.train()
         train_loss = 0
-        for batch_idx, (x1, x2, x3) in enumerate(train_loader):
+        for batch_idx, (x1, x2, x3, x4) in enumerate(train_loader):
 
             optimizer.zero_grad()
 
             x_hat, z, mean, log_var = model(x1, x2)
             loss = loss_function(
-                x1, x_hat, nfilts,
+                x1, x_hat, x4, nfilts,
                 mean, log_var, z, x3,
                 add_kl=add_kl, add_contrastive=add_contrastive
             )
@@ -326,10 +314,10 @@ def train(
         with torch.no_grad():
             test_loss = 0
             model.eval()
-            for test_batch_idx, (x1, x2, x3) in enumerate(test_loader):
+            for test_batch_idx, (x1, x2, x3, x4) in enumerate(test_loader):
                 x_hat, z, mean, log_var = model(x1, x2)
                 loss = loss_function(
-                    x1, x_hat, nfilts,
+                    x1, x_hat, x4, nfilts,
                     mean, log_var, z, x3,
                     add_kl=add_kl, add_contrastive=add_contrastive
                 )
@@ -349,6 +337,7 @@ def train(
 
 def fit_model(
     model, sequence, outseq,
+    loss_mask,
     n_epochs=DEFAULT_EPOCHS,
     learning_rate=DEFAULT_LR,
     batch_size=DEFAULT_BATCH,
@@ -362,10 +351,16 @@ def fit_model(
     nfilts = int((sequence.shape[-1] - 1) / 4) # TODO: change for filter width inclusion
     input_dim = sequence.shape[1]
     
-    train_seq, test_seq, train_out, test_out, train_id, test_id = train_test_split(
-        sequence, outseq, seq_ids, test_size=0.2)
-    train_dataset = SNDataset(train_seq, train_out, train_id, device)
-    test_dataset = SNDataset(test_seq, test_out, test_id, device)
+    (
+        train_seq, test_seq,
+        train_out, test_out,
+        train_id, test_id,
+        train_mask, test_mask
+    ) = train_test_split(
+        sequence, outseq, seq_ids, loss_mask, test_size=0.2)
+    
+    train_dataset = SNDataset(train_seq, train_out, train_id, train_mask, device)
+    test_dataset = SNDataset(test_seq, test_out, test_id, test_mask, device)
     
     train_loader = DataLoader(
         dataset=train_dataset,

@@ -53,10 +53,12 @@ def plot_lightcurves(transient, save_path, surveys=None):
                 alpha=0.5,
                 color=BAND_COLORS[b_uniq]
             )
+        """
         plt.axhline(
             y=lc.survey.limiting_magnitude, color='black',
             linestyle='dotted', linewidth=1
         )
+        """
         
     plt.xlabel('MJD')
     plt.ylabel('Magnitude')

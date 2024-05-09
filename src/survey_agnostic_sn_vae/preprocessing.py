@@ -49,7 +49,7 @@ class LightCurve(object):
 
         self.abs_mags = None
         self.abs_mags_err = None
-        self.abs_lim_mag = None
+        self.abs_lim_mags = None
         self.ordered_abs_lim_mags = None
 
 
@@ -83,6 +83,7 @@ class LightCurve(object):
         if self.abs_mags is not None:
             self.abs_mags = self.abs_mags[gind]
             self.abs_mags_err = self.abs_mags_err[gind]
+            self.abs_lim_mags = self.abs_lim_mags[gind]
 
     def shift_lc(self, t0=0):
         self.times = self.times - t0
@@ -123,8 +124,8 @@ class LightCurve(object):
         Examples
         --------
         """
-        self.abs_mags, self.abs_mag_errs = flux_to_abs_mag(
-            self.fluxes, self.flux_errs, self.zpt, self.zeropoint
+        self.abs_mags, self.abs_mags_err = flux_to_abs_mag(
+            self.fluxes, self.flux_errs, self.zpt, self.redshift
         )
         self.abs_lim_mags = np.array([
             mag_to_abs_mag(self.lim_mag_dict[f], self.redshift) for f in self.filters
@@ -183,16 +184,20 @@ class LightCurve(object):
 
         for jj in np.arange(nfilts):
             gind = np.where(x_pred[:, 1] == jj)[0]
-            dense_fluxes[:, jj] = pred[gind] + self.ordered_abs_lim_mags[jj][0]
+            dense_fluxes[:, jj] = pred[gind] + self.ordered_abs_lim_mags[jj]
             dense_errs[:, jj] = np.sqrt(pred_var[gind])
         
+        masked_vals = np.zeros(dense_fluxes.shape)
         
         # fill in true values
         for jj in np.arange(nfilts):
             t_filter = self.filters == jj
             dense_fluxes[t_filter, jj] = self.abs_mags[t_filter]
             dense_errs[t_filter, jj] = self.abs_mags_err[t_filter]
-            
+            masked_vals[~t_filter, int(jj)] = 1
+            # fix broken errors - usually if no points in that band
+            mask = dense_errs[:, int(jj)] <= 0.0
+            dense_errs[:, int(jj)][mask] = 1.0
             
         # remove redundant time stamps
         eps = 4e-2 # times within one hour considered identical
@@ -200,26 +205,45 @@ class LightCurve(object):
         repeat_idxs = (np.abs(t_diffs) < eps)
         repeat_idxs = np.insert(repeat_idxs, 0, False)
         times = self.times[~repeat_idxs]
+        keep_idxs = np.argwhere(~repeat_idxs)
         
         dense_f_condensed = np.zeros((len(times), nfilts))
         dense_err_condensed = np.zeros((len(times), nfilts))
+        masked_vals_condensed = np.zeros((len(times), nfilts))
         
-        last_true_i = -1
-        for i in range(len(self.times)):
-            if ~repeat_idxs[i]:
-                last_true_i += 1
-            filt = self.filters[i]
-            dense_f_condensed[last_true_i, int(filt)] = dense_fluxes[i, int(filt)]
-            if dense_errs[i, int(filt)] <= 0.0:
-                dense_err_condensed[last_true_i, int(filt)] = 1.0
-            else:
-                dense_err_condensed[last_true_i, int(filt)] = dense_errs[i, int(filt)]
+        for i in range(len(times)):
+            try:
+                repeat_idx_subset = np.arange(keep_idxs[i], keep_idxs[i+1])
+            except:
+                repeat_idx_subset = np.arange(keep_idxs[i], len(self.times))
+            # check if observed fluxes in the interval. If so, only average within those.
+            # otherwise, average all GP-interpolated values
+
+            for jj in np.arange(nfilts):
+                masked_idxs = repeat_idx_subset[masked_vals[repeat_idx_subset, int(jj)] == 0]
+                if len(masked_idxs) == 0:
+                    masked_idxs = repeat_idx_subset
+                    masked_vals_condensed[i, int(jj)] = 1
+                else:
+                    masked_vals_condensed[i, int(jj)] = 0
+                    
+                weights = 1. / dense_errs[masked_idxs, int(jj)]**2
+                dense_f_condensed[i, int(jj)] = np.average(
+                    dense_fluxes[masked_idxs, int(jj)],
+                    weights = weights
+                )
+                new_var = np.var(dense_fluxes[masked_idxs, int(jj)])
+                new_var += 1. / np.sum(weights)
+                dense_err_condensed[i, int(jj)] = np.sqrt(new_var)
+                if dense_err_condensed[i, int(jj)] <= 0.0:
+                    dense_err_condensed[i, int(jj)] = 1.0
 
         self.dense_times = times
         self.dense_lc = np.dstack((dense_f_condensed, dense_err_condensed))
         
         self.gp = gp
         self.gp_mags = gp_mags
+        self.masked_vals = masked_vals_condensed
         return gp, gp_mags
 
 def save_lcs(lc_list, output_dir):
@@ -279,12 +303,13 @@ def generate_superraenn_lc_file(
         if params['redshift'] <= 0.0:
             continue
             
-        for lc in transient.lightcurves:
-            if lc.survey.name != 'LSST':
+        for j, lc in enumerate(transient.lightcurves):
+            if lc.survey.name in ['Swift', '2MASS']:
                 continue
             t, m, merr, b = lc.get_arrays()
             
             if len(t) < 5:
+                #print("SKIPPED")
                 continue
                 
             f, ferr = convert_mag_to_flux(
@@ -292,7 +317,7 @@ def generate_superraenn_lc_file(
             )
             
             sr_lc = LightCurve(
-                name=lc.obj_id,
+                name=int(0.5*(i+j)*(i+j+1)+j), # cantor pairing function (fancy math)
                 times=t,
                 fluxes=f,
                 flux_errs=ferr,
@@ -308,36 +333,44 @@ def generate_superraenn_lc_file(
             )
             
             sr_lc.group = transient_id
-
-            sr_lc.get_abs_mags()
             sr_lc.sort_lc()
+            sr_lc.get_abs_mags()
             pmjd = sr_lc.find_peak(
                 lc.find_peak_mag(composite=True)[0]
             )
             sr_lc.shift_lc(pmjd)
             sr_lc.correct_time_dilation()
-            filt_dict = {f: i for i, f in enumerate(lc.bands)}
 
-            sr_lc.wavelengths = np.zeros(len(lc.bands))
-            sr_lc.filt_widths = np.zeros(len(lc.bands))
+            filt_list = np.unique(sr_lc.filters)
+            sr_lc.wavelengths = np.zeros(len(filt_list))
+            sr_lc.filt_widths = np.zeros(len(filt_list))
             
-            for f in filt_dict:
-                sr_lc.wavelengths[filt_dict[f]] = lc.survey.band_wavelengths[f]
-                sr_lc.filt_widths[filt_dict[f]] = lc.survey.band_widths[f]
-                
-            sr_lc.filter_names_to_numbers(filt_dict)
+            sr_lc.filter_names_to_numbers(filt_list)
+            for j, f in enumerate(filt_list):
+                sr_lc.wavelengths[j] = lc.survey.band_wavelengths[f]
+                sr_lc.filt_widths[j] = lc.survey.band_widths[f]
+
             sr_lc.cut_lc()
+            
+            if len(np.unique(sr_lc.times)) < 5:
+                continue
+            if len(np.unique(sr_lc.filters)) < 2:
+                continue
             try:
-                sr_lc.make_dense_LC(len(lc.bands))
+                sr_lc.make_dense_LC(len(filt_list))
             except:
                 print("SKIPPED")
                 continue
                 
             # pad dense LC to six bands
-            if len(lc.bands) <= 3:
-                tile_factor = int(6 / len(lc.bands))
+            if len(filt_list) <= 3:
+                tile_factor = int(6 / len(filt_list))
                 sr_lc.dense_lc = np.repeat(
                     sr_lc.dense_lc, tile_factor,
+                    axis=1
+                )
+                sr_lc.masked_vals = np.repeat(
+                    sr_lc.masked_vals, tile_factor,
                     axis=1
                 )
                 sr_lc.wavelengths = np.repeat(
@@ -346,17 +379,28 @@ def generate_superraenn_lc_file(
                 sr_lc.filt_widths = np.repeat(
                     sr_lc.filt_widths, tile_factor,
                 )
+                sr_lc.ordered_abs_lim_mags = np.repeat(
+                    sr_lc.ordered_abs_lim_mags, tile_factor,
+                )
                 
-            elif len(lc.bands) < 6:
+                
+            elif len(filt_list) < 6:
                 sr_lc.dense_lc = np.repeat(
                     sr_lc.dense_lc, 2,
                     axis=1
                 )[:,:6,:]
+                sr_lc.masked_vals = np.repeat(
+                    sr_lc.masked_vals, 2,
+                    axis=1
+                )[:,:6]
                 sr_lc.wavelengths = np.repeat(
                     sr_lc.wavelengths, 2
                 )[:6]
                 sr_lc.filt_widths = np.repeat(
                     sr_lc.filt_widths, 2
+                )[:6]
+                sr_lc.ordered_abs_lim_mags = np.repeat(
+                    sr_lc.ordered_abs_lim_mags, 2
                 )[:6]
                 
             sr_lcs.append(sr_lc)
@@ -430,7 +474,9 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         lengths.append(len(lightcurve.dense_lc))
         ids.append(lightcurve.name)
 
-    sequence_len = 64 #np.max(lengths)
+    ids = np.array(ids)
+    
+    sequence_len = 200 #np.max(lengths)
     nfilts = np.shape(lightcurves[0].dense_lc)[1]
     nfiltsp1 = nfilts+1
     nfiltsp2 = 2*nfilts+1
@@ -440,6 +486,7 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     # convert from LC format to list of arrays
     # sequence = np.zeros((n_lcs, sequence_len, nfilts*2+1))
     sequence = np.zeros((n_lcs, sequence_len, nfilts*4 + 2))
+    loss_mask = np.zeros((n_lcs, sequence_len, nfilts))
 
     lms = []
     for i, lightcurve in enumerate(lightcurves):
@@ -452,12 +499,28 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         sequence[i, :, nfiltsp2:nfiltsp3] = lightcurve.wavelengths
         sequence[i, :, nfiltsp3:-1] = lightcurve.filt_widths
         
+        # impose lower limit on f_err
+        mask = sequence[i, 0:lengths[i], nfiltsp1:] < 0.01
+        sequence[i, 0:lengths[i], nfiltsp1:][mask] = 0.01
+        
+        loss_mask[i, 0:lengths[i]] = lightcurve.masked_vals[:sequence_len]
+        loss_mask[i, lengths[i]:] = 1
+        
         # shuffle filters
-        shuffled_idx = np.random.permutation(nfilts)
-        sequence[i, :, 1:nfiltsp1] = sequence[i, :, 1+shuffled_idx].T
-        sequence[i, :, nfiltsp1:nfiltsp2] = sequence[i, :, nfiltsp1+shuffled_idx].T
-        sequence[i, :, nfiltsp2:nfiltsp3] = sequence[i, :, nfiltsp2+shuffled_idx].T
-        sequence[i, :, nfiltsp3:-1] = sequence[i, :, nfiltsp3+shuffled_idx].T
+        shuffled_idx = np.random.permutation(nfilts)[np.newaxis, :]
+        sequence[i, :, 1:nfiltsp1] = np.take_along_axis(
+            sequence[i, :, 1:nfiltsp1], shuffled_idx, axis=1
+        )
+        sequence[i, :, nfiltsp1:nfiltsp2] = np.take_along_axis(
+            sequence[i, :, nfiltsp1:nfiltsp2], shuffled_idx, axis=1
+        )
+        sequence[i, :, nfiltsp2:nfiltsp3] = np.take_along_axis(
+            sequence[i, :, nfiltsp2:nfiltsp3], shuffled_idx, axis=1
+        )
+        sequence[i, :, nfiltsp3:-1] = np.take_along_axis(
+            sequence[i, :, nfiltsp3:-1], shuffled_idx, axis=1
+        )
+
         
         mask = sequence[i, :, nfiltsp1:nfiltsp2] < 0.01
         sequence[i, :, nfiltsp1:nfiltsp2][mask] = filler_err
@@ -468,6 +531,7 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     # Flip because who needs negative magnitudes
     sequence[:, :, 1:nfiltsp1] = -1.0 * sequence[:, :, 1:nfiltsp1]
     
+    """
     # do some sigma clipping before bandmin calculation
     max_mags = np.max(sequence[:, :, 1:nfiltsp1], axis=(1,2))
     bright_mag_limit = np.median(max_mags) + 2. * np.std(max_mags)
@@ -475,6 +539,9 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     mask = (max_mags < bright_mag_limit) & (max_mags > dim_mag_limit)
     sequence = sequence[mask]
     lms = np.array(lms)[mask]
+    loss_mask = loss_mask[mask]
+    ids = ids[mask]
+    """
     #print(len(sequence))
     
     if load:
@@ -486,8 +553,8 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     else:
         bandmin = np.min(sequence[:, :, 1:nfiltsp1])
         bandmax = np.max(sequence[:, :, 1:nfiltsp1])
-        wavemin = np.min(sequence[:, :, nfiltsp2:-1])
-        wavemax = np.max(sequence[:, :, nfiltsp2:-1])
+        wavemin = np.min(sequence[:, :, nfiltsp2:nfiltsp3])
+        wavemax = np.max(sequence[:, :, nfiltsp2:nfiltsp3])
 
     
     # Normalize flux values, flux errors, and wavelengths to be between 0 and 1
@@ -509,4 +576,9 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         model_prep_file = os.path.join(outdir,'prep.npz')
         np.savez(model_prep_file, wavemin=wavemin, wavemax=wavemax, bandmin=bandmin, bandmax=bandmax)
 
-    return np.array(sequence, dtype=np.float32), np.array(outseq_tiled, dtype=np.float32), ids, sequence_len, nfilts
+    return (
+        np.array(sequence, dtype=np.float32),
+        np.array(outseq_tiled, dtype=np.float32),
+        np.array(loss_mask, dtype=np.float32),
+        ids, sequence_len, nfilts
+    )

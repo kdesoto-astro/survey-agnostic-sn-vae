@@ -11,11 +11,6 @@ from astropy import units as un
 
 from survey_agnostic_sn_vae.data_generation.utils import *
 
-LIMITING_MAGS = {
-    'LSST': 26.9, 'ZTF': 20.8,
-    'PanSTARRS': 23.3, '2MASS': 15.8,
-    'Swift': 22.3,
-}
 AVG_UNCERTAINTIES = {
     'LSST': 0.1, 'ZTF': 0.2,
     'PanSTARRS': 0.12, '2MASS': 0.4,
@@ -132,7 +127,7 @@ class Survey:
         print("Switching back to original working directory")
         os.chdir(orig_path)
 
-    def generate_sample_times(self, final_time, max_points=50):
+    def generate_sample_times(self, final_time, max_points=250):
         """Approximate sampling cadence for survey.
         """
         times = {}
@@ -210,7 +205,7 @@ class Transient:
 
 
     def generate_lightcurve(
-        self, survey, output_path, max_time=500,
+        self, survey, output_path, max_time=500.0,
         fitter=DEFAULT_FITTER
     ):
         """Generate LightCurve object for a given
@@ -230,7 +225,7 @@ class Transient:
             time_list=t_list,
             band_list=s_bands,
             band_instruments=[s_name,],
-            max_time=500.0,
+            max_time=max_time,
             iterations=0,
             write=True,
             output_path=output_path,
@@ -408,7 +403,7 @@ class LightCurve:
         """Remove points according to limiting magnitude.
         """
         for b in self.bands:
-            keep_idx = (self.mag[b] < self.survey.lim_mag_dict)
+            keep_idx = (self.mag[b] < self.survey.lim_mag_dict[b])
             self.times[b] = self.times[b][keep_idx]
             self.mag[b] = self.mag[b][keep_idx]
             self.mag_err[b] = self.mag_err[b][keep_idx]

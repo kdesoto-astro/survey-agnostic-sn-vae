@@ -33,7 +33,6 @@ CONSTRAINT_FOLDER = os.path.join(
     "model_constraints"
 )
 
-DEFAULT_FITTER = mosfit.fitter.Fitter()
 
 class ModelConstraints:
     def __init__(self, model_type):
@@ -89,6 +88,7 @@ class Survey:
         self.lim_mag_dict = {
             k: FILT_LIM_MAGS[f"{self.name} {k}"] for k in self.bands
         }
+        self.fitter = mosfit.fitter.Fitter()
         # take average
         orig_path = os.getcwd()
 
@@ -101,7 +101,7 @@ class Survey:
 
         with suppress_stdout():
             # generate initial LCs/model params
-            DEFAULT_FITTER.fit_events(
+            self.fitter.fit_events(
                 models=['slsn'],
                 max_time=500.0,
                 iterations=0,
@@ -110,7 +110,7 @@ class Survey:
                 band_list=self.bands,
                 band_instruments=self.name,
             )
-            model = DEFAULT_FITTER._model
+            model = self.fitter._model
 
             for task in model._call_stack:
                 cur_task = model._call_stack[task]
@@ -206,7 +206,7 @@ class Transient:
 
     def generate_lightcurve(
         self, survey, output_path, max_time=500.0,
-        fitter=DEFAULT_FITTER
+        fitter=None
     ):
         """Generate LightCurve object for a given
         Survey, from the model_params specified.
@@ -216,6 +216,9 @@ class Transient:
         survey : Survey
             The survey to use to generate LightCurve
         """
+        if fitter is None:
+            fitter = mosfit.fitter.Fitter()
+
         s_name = survey.name
         s_bands = survey.bands
         s_times, t_list = survey.generate_sample_times(max_time)

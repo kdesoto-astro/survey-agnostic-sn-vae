@@ -5,7 +5,8 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
+from typing import Iterator
 import torchvision.transforms as transforms
 from torchvision.utils import save_image, make_grid
 from torch.optim import Adam
@@ -24,39 +25,68 @@ DEFAULT_LR = 1e-4
 
 print(torch.backends.mps.is_available())
 
-
-def contrastive_loss(samples, ids, distance='cosine', temp=1.0):
+    
+def contrastive_loss(samples, means, ids, distance='kl', temp=10.0):
     """Pushes multiple views of the same
     object together in the latent space.
     """
+    N = samples.shape[0]
     # samples is the latent variables
-    S_i = torch.unsqueeze(samples, 0).repeat((samples.shape[0],1,1))
+    S_i = torch.unsqueeze(samples, 0).repeat((N,1,1))
     S_j = torch.transpose(S_i, 0, 1)
-
+    
+    Z_i = torch.unsqueeze(means, 0).repeat((N,1,1))
+    Z_j = torch.transpose(S_i, 0, 1)
+    
     # make "adjacency matrix" type thing for object IDs
-    objid_mat = torch.unsqueeze(ids, 0).repeat((ids.shape[0],1,1))
-    objid_bool_mat = torch.logical_not(
-        torch.eq(objid_mat, torch.transpose(objid_mat,0,1))
-    )
+    objid_mat = torch.unsqueeze(ids, 0).repeat((N,1))
+    objid_bool_mat = torch.eq(objid_mat, torch.transpose(objid_mat,0,1))
 
     # Distance for object IDs is 0 if they're the same and 1 otherwise
     objid_dist = objid_bool_mat.type(torch.float32)
-
+    objid_dist[range(N), range(N)] = 0.0 # unset diagonal
+    
+    # check rows where there's NO matches
+    no_match_idxs = torch.all(objid_dist == 0.0, dim=0)
+    
+    # inverse identity matrix
+    denom_arr = 1. - torch.eye(N).to(samples.device)
+    
     # SOFT NEAREST NEIGHBORS LOSS
-    #if distance == 'dot': # dot product between positive samples
-    #    num = objid_dist * S_ij 
     if distance == 'cosine':
         cos_sim = nn.CosineSimilarity(dim=-1, eps=1e-6)
-        dists = cos_sim(S_i, S_j)
+        dists = 1 - cos_sim(S_i, S_j)
+    elif distance == 'euclidean':
+        dists = torch.norm(S_i - S_j, dim=-1)
+        dists = torch.clamp(dists, min=1e-8)
+    elif distance == 'kl':
+        stddev1 = torch.exp(0.5*S_i)
+        stddev2 = torch.exp(0.5*S_j)
+        kl = torch.log(stddev2/stddev1) + (stddev1**2 + (Z_i - Z_j).pow(2)) / (2*stddev2**2) - 0.5
+        dists = torch.mean(kl, dim=-1)
+        # cap distances too large
+        dists[dists > 200.] = 200.
     else:
         raise ValueError(f"distance metric {distance} not implemented!")
-        
-    exp_sims = torch.exp(dists / temp)
-    num = torch.sum(objid_dist * exp_sims, dim=1)
-    denom = torch.sum(exp_sims, dim=1)
-    return -1 * torch.sum(
+    
+    exp_sims = torch.exp(-dists / temp)
+    num = torch.sum(
+        (objid_dist * exp_sims)[~no_match_idxs][:,~no_match_idxs],
+        dim=1
+    )
+    denom = torch.sum(
+        (denom_arr * exp_sims)[~no_match_idxs][:,~no_match_idxs],
+        dim=1
+    )
+    #rint(torch.min(num), torch.max(num))
+    l = -1 * torch.mean(
         torch.log(num / denom)
-    ) / len(samples)
+    )
+    print(torch.mean(num))
+    #l[torch.isnan(l)] = 1e3
+    #l[torch.isinf(l)] = 1e3
+    
+    return l
         
     
 def loss_function(
@@ -72,16 +102,59 @@ def loss_function(
         torch.square((f_true - y_pred)/err_true)[~loss_mask]
     )
     
-    reduced_mean = torch.mean(mean_per_lc)
-    loss = 2.0 * reduced_mean #over-weight the recon loss
+    recon_loss = torch.mean(mean_per_lc)
+    losses = [recon_loss,]
 
     if add_kl:
-        loss += - 0.5 * torch.mean(1 + log_var - mean.pow(2) - log_var.exp())
+        kl_loss = - 0.5 * torch.mean(1 + log_var - mean.pow(2) - log_var.exp())
+        losses.append(kl_loss)
+        
     if add_contrastive:
-        loss += contrastive_loss(samples, ids)
+        cl = contrastive_loss(log_var, mean, ids)
+        losses.append(cl)
 
-    return loss
+    return losses
 
+
+class CustomBatchSampler(Sampler):
+    def __init__(self, data, batch_size: int, shuffle: bool, device: str) -> None:
+        self.data = data
+        self.batch_size = batch_size
+        self.generator = None
+        self.unique_ids, self.id_groupings = torch.unique(
+            data.ids, sorted=True, return_inverse=True
+        )
+        self.shuffle = shuffle
+        self.device = device
+
+    def __len__(self) -> int:
+        return (len(self.data) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self) -> Iterator:
+        n = len(self.data)
+        if self.generator is None:
+            seed = int(torch.empty((), dtype=torch.int64).random_().item())
+            generator = torch.Generator()
+            generator.manual_seed(seed)
+        else:
+            generator = self.generator
+            
+        if not self.shuffle:
+            all_ids = torch.arange(n)
+            
+        else:
+            shuffled_id_idxs = torch.randperm(
+                len(self.unique_ids), generator=generator
+            )
+            all_ids = torch.empty((0, 1), dtype=torch.long).to(self.device)
+
+            for i in shuffled_id_idxs:
+                all_ids = torch.cat((all_ids, torch.argwhere(self.id_groupings == i)))
+            all_ids = torch.squeeze(all_ids)
+                    
+        for batch in all_ids.chunk(len(self)):
+            yield batch.tolist()
+            
 
 class SNDataset(Dataset):
     """Face Landmarks dataset."""
@@ -96,8 +169,8 @@ class SNDataset(Dataset):
         """
         self.input1 = torch.from_numpy(sequence).to(device)
         self.input2 = torch.from_numpy(outseq).to(device)
-        self.input3 = torch.from_numpy(obj_ids).to(device)
-        self.input4 = torch.from_numpy(loss_mask).bool().to(device)
+        self.ids = torch.from_numpy(obj_ids).to(device)
+        self.mask = torch.from_numpy(loss_mask).bool().to(device)
 
     def __len__(self):
         return len(self.input1)
@@ -105,8 +178,7 @@ class SNDataset(Dataset):
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
-            
-        return self.input1[idx], self.input2[idx], self.input3[idx], self.input4[idx]
+        return self.input1[idx], self.input2[idx], self.ids[idx], self.mask[idx]
     
 
 class SelectItem(nn.Module):
@@ -126,7 +198,6 @@ class TimeDistributed(nn.Module):
         self.batch_first = batch_first
 
     def forward(self, x):
-
         if len(x.size()) <= 2:
             return self.module(x)
 
@@ -240,7 +311,7 @@ class VAE(nn.Module):
         
         data_loader = DataLoader(
             dataset=dataset,
-            batch_size=64,
+            batch_size=256,
             shuffle=False,
         )
             
@@ -279,7 +350,7 @@ def evaluate(model, data_loader):
                 means = mean
                 log_vars = log_var
             else:
-                x_hats = torch.cat((x_hat, x_hats))
+                x_hats = torch.cat((x_hats, x_hat))
                 means = torch.cat((means, mean))
                 log_vars = torch.cat((log_vars, log_var))     
             
@@ -289,8 +360,12 @@ def evaluate(model, data_loader):
 def train(
     model, optimizer, train_loader,
     test_loader, nfilts, epochs,
-    add_kl=True, add_contrastive=True
+    add_kl=True, add_contrastive=True,
+    latent_space_plot_dir=None,
 ):
+    if latent_space_plot_dir is not None:
+        from survey_agnostic_sn_vae.plotting import plot_latent_space
+        
     for epoch in range(epochs):
         model.train()
         train_loss = 0
@@ -299,11 +374,12 @@ def train(
             optimizer.zero_grad()
 
             x_hat, z, mean, log_var = model(x1, x2)
-            loss = loss_function(
+            losses = loss_function(
                 x1, x_hat, x4, nfilts,
                 mean, log_var, z, x3,
                 add_kl=add_kl, add_contrastive=add_contrastive
             )
+            loss = sum(losses)
             
             train_loss += loss.item()
             
@@ -314,16 +390,40 @@ def train(
         with torch.no_grad():
             test_loss = 0
             model.eval()
+            
+            means = torch.empty((0,model.latent_dim), dtype=torch.float32)
+            logvars = torch.empty((0,model.latent_dim), dtype=torch.float32)
+            samples = torch.empty((0,model.latent_dim), dtype=torch.float32)
+            all_ids = torch.empty((0,), dtype=torch.float32)
+            
             for test_batch_idx, (x1, x2, x3, x4) in enumerate(test_loader):
                 x_hat, z, mean, log_var = model(x1, x2)
-                loss = loss_function(
+                test_losses = loss_function(
                     x1, x_hat, x4, nfilts,
                     mean, log_var, z, x3,
                     add_kl=add_kl, add_contrastive=add_contrastive
                 )
-                test_loss += loss.item()
+                loss2 = sum(test_losses)
+                test_loss += loss2.item()
+                means = torch.cat((means, mean), axis=0)
+                logvars = torch.cat((logvars, log_var), axis=0)
+                samples = torch.cat((samples, z), axis=0)
+                all_ids = torch.cat((all_ids, x3), axis=0)
+                
+        
+            if latent_space_plot_dir is not None:
+                save_fn = os.path.join(
+                    latent_space_plot_dir, f'{epoch}'.zfill(4) + '.pdf'
+                )
+                plot_latent_space(
+                    means, logvars, samples,
+                    all_ids, save_fn,
+                    show_contrastive=add_contrastive
+                )
+                
+            
 
-        if epoch % 50 == 0:
+        if epoch % 10 == 0:
             print(
                 "\tEpoch",
                 epoch + 1,
@@ -332,6 +432,13 @@ def train(
                 "\tVal Loss: ",
                 test_loss/len(test_loader)
             )
+            print(
+                '\tTrain',
+                [x.item() for x in losses],
+                '\tTest',
+                [x.item() for x in test_losses]
+            )
+                
     return train_loss/len(train_loader), test_loss/len(test_loader)
 
 
@@ -344,7 +451,11 @@ def fit_model(
     device=DEFAULT_DEVICE,
     add_kl=True,
     add_contrastive=True,
+    latent_space_plot_dir=None,
 ):
+    if latent_space_plot_dir is not None:
+        os.makedirs(latent_space_plot_dir, exist_ok=True)
+        
     seq_ids = sequence[:,0,-1]
     sequence = sequence[:,:,:-1]
     
@@ -357,20 +468,32 @@ def fit_model(
         train_id, test_id,
         train_mask, test_mask
     ) = train_test_split(
-        sequence, outseq, seq_ids, loss_mask, test_size=0.2)
+        sequence, outseq,
+        seq_ids, loss_mask,
+        shuffle=False,
+        test_size=0.2
+    )
     
     train_dataset = SNDataset(train_seq, train_out, train_id, train_mask, device)
     test_dataset = SNDataset(test_seq, test_out, test_id, test_mask, device)
     
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
+        batch_sampler=CustomBatchSampler(
+            data=train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            device=device,
+        ),
     )
     test_loader = DataLoader(
         dataset=test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
+        batch_sampler=CustomBatchSampler(
+            data=test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            device=device
+        ),
     )
     # TODO: set device = M1 gpu
     model = model.to(device)
@@ -378,7 +501,8 @@ def fit_model(
     
     train(
         model, optimizer, train_loader, test_loader, nfilts,
-        epochs=n_epochs, add_kl=add_kl, add_contrastive=add_contrastive
+        epochs=n_epochs, add_kl=add_kl, add_contrastive=add_contrastive,
+        latent_space_plot_dir=latent_space_plot_dir
     )
     
     return model

@@ -64,14 +64,15 @@ class LightCurve(object):
             self.abs_mags_err = self.abs_mags_err[gind]
             self.abs_lim_mags = self.abs_lim_mags[gind]
 
-    def find_peak(self, tpeak_guess):
-        gind = np.where((np.abs(self.times-tpeak_guess) < 100.0) &
-                        (self.fluxes/self.flux_errs > 3.0))
-        if len(gind[0]) == 0:
-            gind = np.where((np.abs(self.times - tpeak_guess) < 100.0))
-        if self.abs_mags is not None:
-            tpeak = self.times[gind][np.argmin(self.abs_mags[gind])]
-        return tpeak
+    def find_peak(self):
+        tpeaks = []
+        for f in np.unique(self.filters):
+            tpeaks.append(
+                self.times[self.filters==f][
+                    np.argmin(self.abs_mags[self.filters==f])
+                ]
+            )
+        return np.median(tpeaks)
 
     def cut_lc(self, limit_before=70, limit_after=200):
         gind = np.where((self.times > -limit_before) &
@@ -87,6 +88,36 @@ class LightCurve(object):
 
     def shift_lc(self, t0=0):
         self.times = self.times - t0
+     
+    def truncate(self, maxt):
+        gind = self.times <= maxt
+        
+        self.times = self.times[gind]
+        self.fluxes = self.fluxes[gind]
+        self.flux_errs = self.flux_errs[gind]
+        self.filters = self.filters[gind]
+        if self.abs_mags is not None:
+            self.abs_mags = self.abs_mags[gind]
+            self.abs_mags_err = self.abs_mags_err[gind]
+            self.abs_lim_mags = self.abs_lim_mags[gind]
+        
+    def subsample(self, n_points):
+        if n_points >= len(self.times):
+            return None
+        gind = np.random.choice(
+            np.arange(len(self.times)),
+            size=n_points,
+            replace=False
+        )
+        self.times = self.times[gind]
+        self.fluxes = self.fluxes[gind]
+        self.flux_errs = self.flux_errs[gind]
+        self.filters = self.filters[gind]
+        if self.abs_mags is not None:
+            self.abs_mags = self.abs_mags[gind]
+            self.abs_mags_err = self.abs_mags_err[gind]
+            self.abs_lim_mags = self.abs_lim_mags[gind]
+        
 
     def correct_time_dilation(self):
         self.times = self.times / (1.+self.redshift)
@@ -245,6 +276,49 @@ class LightCurve(object):
         self.gp_mags = gp_mags
         self.masked_vals = masked_vals_condensed
         return gp, gp_mags
+    
+    def tile(self):
+        N = self.dense_lc.shape[1]
+        
+        # pad dense LC to six bands
+        if N <= 3:
+            tile_factor = int(6 / N)
+            self.dense_lc = np.repeat(
+                self.dense_lc, tile_factor,
+                axis=1
+            )
+            self.masked_vals = np.repeat(
+                self.masked_vals, tile_factor,
+                axis=1
+            )
+            self.wavelengths = np.repeat(
+                self.wavelengths, tile_factor,
+            )
+            self.filt_widths = np.repeat(
+                self.filt_widths, tile_factor,
+            )
+            self.ordered_abs_lim_mags = np.repeat(
+                self.ordered_abs_lim_mags, tile_factor,
+            )
+
+        elif N < 6:
+            self.dense_lc = np.repeat(
+                self.dense_lc, 2,
+                axis=1
+            )[:,:6,:]
+            self.masked_vals = np.repeat(
+                self.masked_vals, 2,
+                axis=1
+            )[:,:6]
+            self.wavelengths = np.repeat(
+                self.wavelengths, 2
+            )[:6]
+            self.filt_widths = np.repeat(
+                self.filt_widths, 2
+            )[:6]
+            self.ordered_abs_lim_mags = np.repeat(
+                self.ordered_abs_lim_mags, 2
+            )[:6]
 
 def save_lcs(lc_list, output_dir):
     """
@@ -333,12 +407,23 @@ def generate_superraenn_lc_file(
             )
             
             sr_lc.group = transient_id
+            
+            npoints = np.random.choice(
+                np.arange(5, 50)
+            )
+            
             sr_lc.sort_lc()
             sr_lc.get_abs_mags()
-            pmjd = sr_lc.find_peak(
-                lc.find_peak_mag(composite=True)[0]
-            )
+            pmjd = sr_lc.find_peak()
             sr_lc.shift_lc(pmjd)
+            sr_lc.truncate(np.random.uniform(low=0, high=100))
+            sr_lc.subsample(npoints)
+            
+            # re-sort/center
+            sr_lc.sort_lc()
+            pmjd = sr_lc.find_peak()
+            sr_lc.shift_lc(pmjd)
+            
             sr_lc.correct_time_dilation()
 
             filt_list = np.unique(sr_lc.filters)
@@ -358,52 +443,16 @@ def generate_superraenn_lc_file(
                 continue
             try:
                 sr_lc.make_dense_LC(len(filt_list))
+                
+                if len(np.unique(sr_lc.dense_times)) < 5:
+                    continue
             except:
                 print("SKIPPED")
                 continue
                 
-            # pad dense LC to six bands
-            if len(filt_list) <= 3:
-                tile_factor = int(6 / len(filt_list))
-                sr_lc.dense_lc = np.repeat(
-                    sr_lc.dense_lc, tile_factor,
-                    axis=1
-                )
-                sr_lc.masked_vals = np.repeat(
-                    sr_lc.masked_vals, tile_factor,
-                    axis=1
-                )
-                sr_lc.wavelengths = np.repeat(
-                    sr_lc.wavelengths, tile_factor,
-                )
-                sr_lc.filt_widths = np.repeat(
-                    sr_lc.filt_widths, tile_factor,
-                )
-                sr_lc.ordered_abs_lim_mags = np.repeat(
-                    sr_lc.ordered_abs_lim_mags, tile_factor,
-                )
-                
-                
-            elif len(filt_list) < 6:
-                sr_lc.dense_lc = np.repeat(
-                    sr_lc.dense_lc, 2,
-                    axis=1
-                )[:,:6,:]
-                sr_lc.masked_vals = np.repeat(
-                    sr_lc.masked_vals, 2,
-                    axis=1
-                )[:,:6]
-                sr_lc.wavelengths = np.repeat(
-                    sr_lc.wavelengths, 2
-                )[:6]
-                sr_lc.filt_widths = np.repeat(
-                    sr_lc.filt_widths, 2
-                )[:6]
-                sr_lc.ordered_abs_lim_mags = np.repeat(
-                    sr_lc.ordered_abs_lim_mags, 2
-                )[:6]
-                
+            sr_lc.tile()
             sr_lcs.append(sr_lc)
+            
         transient_id += 1
             
     save_lcs(sr_lcs, save_dir)
@@ -476,7 +525,10 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
 
     ids = np.array(ids)
     
-    sequence_len = 200 #np.max(lengths)
+    sequence_len = 32 #min(200, np.max(lengths))
+    print(sequence_len)
+    lengths = np.clip(lengths, a_min=0, a_max=sequence_len).astype(int)
+    
     nfilts = np.shape(lightcurves[0].dense_lc)[1]
     nfiltsp1 = nfilts+1
     nfiltsp2 = 2*nfilts+1
@@ -490,22 +542,18 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
 
     lms = []
     for i, lightcurve in enumerate(lightcurves):
-        sequence[i, 0:lengths[i], 0] = lightcurve.dense_times[:sequence_len] / 1000. # to keep values small
-        sequence[i, 0:lengths[i], 1:nfiltsp1] = lightcurve.dense_lc[:sequence_len, :, 0] # fluxes
-        sequence[i, 0:lengths[i], nfiltsp1:nfiltsp2] = lightcurve.dense_lc[:sequence_len, :, 1] # flux errors
+        sequence[i, 0:lengths[i], 0] = lightcurve.dense_times[:lengths[i]] / 1000. # to keep values small
+        sequence[i, 0:lengths[i], 1:nfiltsp1] = lightcurve.dense_lc[:lengths[i], :, 0] # fluxes
+        sequence[i, 0:lengths[i], nfiltsp1:nfiltsp2] = lightcurve.dense_lc[:lengths[i], :, 1] # flux errors
         sequence[i, lengths[i]:, 0] = (np.max(lightcurve.times)+new_t_max) / 1000.
         sequence[i, lengths[i]:, 1:nfiltsp1] = lightcurve.ordered_abs_lim_mags[np.newaxis,:]
         sequence[i, lengths[i]:, nfiltsp1:nfiltsp2] = filler_err
         sequence[i, :, nfiltsp2:nfiltsp3] = lightcurve.wavelengths
         sequence[i, :, nfiltsp3:-1] = lightcurve.filt_widths
         
-        # impose lower limit on f_err
-        mask = sequence[i, 0:lengths[i], nfiltsp1:] < 0.01
-        sequence[i, 0:lengths[i], nfiltsp1:][mask] = 0.01
-        
         loss_mask[i, 0:lengths[i]] = lightcurve.masked_vals[:sequence_len]
         loss_mask[i, lengths[i]:] = 1
-        
+
         # shuffle filters
         shuffled_idx = np.random.permutation(nfilts)[np.newaxis, :]
         sequence[i, :, 1:nfiltsp1] = np.take_along_axis(
@@ -520,13 +568,19 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         sequence[i, :, nfiltsp3:-1] = np.take_along_axis(
             sequence[i, :, nfiltsp3:-1], shuffled_idx, axis=1
         )
+        loss_mask[i, :, :] = np.take_along_axis(
+            loss_mask[i, :, :], shuffled_idx, axis=1
+        )
 
+        amp = np.max(sequence[i, :, 1:nfiltsp1]) - np.min(sequence[i, :, 1:nfiltsp1])
+        mask = sequence[i, :, nfiltsp1:nfiltsp2] < 0.01 * amp
+        sequence[i, :, nfiltsp1:nfiltsp2][mask] = 0.01 * amp
         
-        mask = sequence[i, :, nfiltsp1:nfiltsp2] < 0.01
-        sequence[i, :, nfiltsp1:nfiltsp2][mask] = filler_err
         sequence[i, :, -1] = lightcurve.group
         
-        lms.append(lightcurve.ordered_abs_lim_mags)
+        lms.append(
+            lightcurve.ordered_abs_lim_mags[shuffled_idx[0]]
+        )
         
     # Flip because who needs negative magnitudes
     sequence[:, :, 1:nfiltsp1] = -1.0 * sequence[:, :, 1:nfiltsp1]
@@ -567,7 +621,10 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     sequence[:, :, nfiltsp3:-1] = (sequence[:, :, nfiltsp3:-1]) \
         / (wavemax - wavemin)
     sequence[:, :, -1] = sequence[:, :, -1] / np.max(sequence[:, :, -1])
-
+    
+    mask = sequence[:, :, nfiltsp1:nfiltsp2] < 0.001
+    sequence[:, :, nfiltsp1:nfiltsp2][mask] = 0.001
+    
     outseq_tiled = calc_outseq(sequence, lms, bandmin, bandmax)
 
     if save:

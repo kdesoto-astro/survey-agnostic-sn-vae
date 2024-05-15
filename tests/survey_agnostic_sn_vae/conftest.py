@@ -6,7 +6,10 @@ import pandas as pd
 import torch
 
 from survey_agnostic_sn_vae.raenn import VAE
-from survey_agnostic_sn_vae.preprocessing import calc_outseq
+from survey_agnostic_sn_vae.preprocessing import (
+    calc_outseq,
+    LightCurve
+)
 
 TEST_DIR = os.path.dirname(__file__)
 
@@ -54,3 +57,33 @@ def test_inputs(test_sequence):
     )
     input3 = test_sequence[:,:,-1]
     return input1, input2, input3
+
+@pytest.fixture
+def test_twoband_lightcurve():
+    """Test 2-band Lightcurve object.
+    """
+    test_t = np.random.uniform(size=10)
+    test_f = np.random.uniform(size=10) * 1000 + 10000
+    test_ferr = np.random.uniform(size=10) * 100 + 100
+    test_b = ["g",] * 5
+    test_b.extend(["r",] * 5)
+    test_b = np.array(test_b)
+    
+    lc = LightCurve(
+        name='test',
+        times=test_t,
+        fluxes=test_f,
+        flux_errs=test_ferr,
+        filters=test_b,
+        zpt=26.3,
+        redshift=0.1,
+        lim_mag_dict={'g': 20.6, 'r': 20.8}
+    )
+    lc.get_abs_mags()
+    lc.filter_names_to_numbers(['g', 'r'])
+
+    lc.make_dense_LC(2)
+    lc.wavelengths = [1000., 2300.]
+    lc.filt_widths = [200., 300.]
+    return lc
+        

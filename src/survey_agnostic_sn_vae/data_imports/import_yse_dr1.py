@@ -1,11 +1,12 @@
+import os, glob
 import pandas as pd
-from survey_agnostic_sn_vae.preprocessing import LightCurve
+from survey_agnostic_sn_vae.preprocessing import LightCurve, save_lcs
 import numpy as np
 
 DEFAULT_ZPT = 27.5
 # X for ZTF-*g*; Y for ZTF-*r*
 # no y-band for Panstarrs
-"""
+
 LIM_MAGS = {
     'g': 22.0,
     'r': 21.8,
@@ -14,14 +15,14 @@ LIM_MAGS = {
     'X': 20.8,
     'Y': 20.6
 }
-"""
-# TODO: change limmags in raenn to be per-datapoint
 
+# TODO: change limmags in raenn to be per-datapoint
+"""
 LIM_MAGS = {
     'ZTF': 20.8,
     'YSE': 22.0
 } # use most sensitive band
-
+"""
 BAND_WIDTHS = {
     'g':1148.66,
     'r':1397.73,
@@ -64,7 +65,6 @@ def import_single_yse_lc(fn):
     """Imports single YSE SNANA file.
     """
     header, meta = find_meta_start_of_data(fn)
-    print(meta)
     df = pd.read_csv(
         fn, header=header,
         on_bad_lines='skip',
@@ -81,7 +81,6 @@ def import_single_yse_lc(fn):
     sr_lcs = {}
     
     for lc_survey in lcs:
-        print(lc_survey)
         lc = lcs[lc_survey]
         lc = lc.dropna(axis=0, how='any')
         
@@ -89,6 +88,18 @@ def import_single_yse_lc(fn):
         f = lc.FLUXCAL.to_numpy()
         ferr = lc.FLUXCALERR.to_numpy()
         b = lc.FLT.to_numpy()
+        
+        if len(t) < 5:
+            print("SKIPPED T")
+            continue
+            
+        # variability cut
+        if np.mean(ferr) >= np.std(f):
+            print("SKIPPED A")
+            continue
+        if 3 * np.mean(ferr) >= (np.max(f) - np.min(f)):
+            print("SKIPPED B")
+            continue
         
         sr_lc = LightCurve(
             name=meta['NAME'],
@@ -101,67 +112,64 @@ def import_single_yse_lc(fn):
             zpt=DEFAULT_ZPT,
             mwebv=float(meta['MWEBV']),
             redshift=float(meta['REDSHIFT_FINAL']),
-            lim_mag=LIM_MAGS[lc_survey],
+            lim_mag_dict=LIM_MAGS,
             obj_type=meta['SPEC_CLASS']
         )
+
         sr_lc.group = hash(meta['NAME'])
         sr_lc.get_abs_mags()
         sr_lc.sort_lc()
-        pmjd = sr_lc.find_peak(
-            t[np.argmax(f)]
-        )
+        pmjd = sr_lc.find_peak()
         sr_lc.shift_lc(pmjd)
         sr_lc.correct_time_dilation()
         
-        filt_dict = {f: i for i, f in enumerate(np.unique(b))}
+        filt_list = np.unique(sr_lc.filters)
+        
+        if len(filt_list) < 2:
+            print("SKIPPED C")
+            continue
+        
+        sr_lc.wavelengths = np.zeros(len(filt_list))
+        sr_lc.filt_widths = np.zeros(len(filt_list))
 
-        sr_lc.wavelengths = np.zeros(len(np.unique(b)))
-        sr_lc.filt_widths = np.zeros(len(np.unique(b)))
+        for j, f in enumerate(filt_list):
+            sr_lc.wavelengths[j] = BAND_WAVELENGTHS[f]
+            sr_lc.filt_widths[j] = BAND_WIDTHS[f]
 
-        for f in filt_dict:
-            sr_lc.wavelengths[filt_dict[f]] = BAND_WAVELENGTHS[f]
-            sr_lc.filt_widths[filt_dict[f]] = BAND_WIDTHS[f]
-
-        sr_lc.filter_names_to_numbers(filt_dict)
+        sr_lc.filter_names_to_numbers(filt_list)
         sr_lc.cut_lc()
         try:
-            sr_lc.make_dense_LC(len(np.unique(b)))
+            sr_lc.make_dense_LC(len(filt_list))
         except:
-            print("SKIPPED")
+            continue
+            
+        if len(sr_lc.dense_times) < 5:
+            print("SKIPPED D")
             continue
 
-        # pad dense LC to six bands
-        if len(np.unique(b)) <= 3:
-            tile_factor = int(6 / len(np.unique(b)))
-            sr_lc.dense_lc = np.repeat(
-                sr_lc.dense_lc, tile_factor,
-                axis=1
-            )
-            sr_lc.wavelengths = np.repeat(
-                sr_lc.wavelengths, tile_factor,
-            )
-            sr_lc.filt_widths = np.repeat(
-                sr_lc.filt_widths, tile_factor,
-            )
-
-        elif len(np.unique(b)) < 6:
-            sr_lc.dense_lc = np.repeat(
-                sr_lc.dense_lc, 2,
-                axis=1
-            )[:,:6,:]
-            sr_lc.wavelengths = np.repeat(
-                sr_lc.wavelengths, 2
-            )[:6]
-            sr_lc.filt_widths = np.repeat(
-                sr_lc.filt_widths, 2
-            )[:6]
-
+        sr_lc.tile()
         sr_lcs[lc_survey] = sr_lc
         
     return sr_lcs
+
+
+def generate_raenn_file(test_dir, save_dir):
+    """Generate lcs.npz file for raenn training.
+    """
+    lcs = []
+    for i, fn in enumerate(glob.glob(
+        os.path.join(test_dir, "*.dat")
+    )):
+        if i % 100 == 0:
+            print(i)
+        lc_dict = import_single_yse_lc(fn)
+        for k in lc_dict:
+            lcs.append(lc_dict[k])
     
+    save_lcs(lcs, save_dir)
     
     
 if __name__ == "__main__":
-    test_fn = '../../../data/yse_dr1_zenodo_snr_geq_4/2019pmd.snana.dat'
-    import_single_yse_lc(test_fn)
+    test_dir = '../../../data/yse_dr1_zenodo_snr_geq_4/'
+    save_dir = '../../../data/superraenn/yse/'
+    generate_raenn_file(test_dir, save_dir)

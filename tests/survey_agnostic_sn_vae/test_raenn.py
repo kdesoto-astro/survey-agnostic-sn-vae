@@ -1,6 +1,22 @@
 from survey_agnostic_sn_vae.raenn import *
 
-
+def test_contrastive_loss() -> None:
+    """Test contrastive loss is working as expected.
+    """
+    test_samples = torch.from_numpy(
+        np.random.normal(size=(10,5))
+    ) # 10 events, 5 dimensions
+    test_ids = np.random.normal(size=5)
+    test_ids = torch.from_numpy(np.repeat(test_ids, 2))
+    cl = contrastive_loss(test_samples, test_ids)
+    assert cl > 0.0
+    
+    # test that perfect contrast --> smallest loss
+    test_samples[1::2] = test_samples[::2]
+    cl2 = contrastive_loss(test_samples, test_ids)
+    assert cl2 < cl
+    
+    
 def test_merge(test_vae, test_inputs) -> None:
     """Test that merging of decoder inputs
     is happening as expected.

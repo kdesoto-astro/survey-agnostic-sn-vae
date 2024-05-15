@@ -20,35 +20,37 @@ lsst_cadence = {
 
 panstarrs_cadence = {b: 3.0 for b in ['g', 'r', 'i', 'z']}
 """
-lsst_survey = Survey(
-    'LSST',
-    ['u', 'g', 'r', 'i', 'z', 'y'],
-    4.0
-)
-ztf_survey = Survey(
-    'ZTF',
-    ['g', 'r'],
-    2.0 # band sampling coupled
-)
-panstarrs_survey = Survey(
-    'PanSTARRS',
-    ['g', 'r', 'i', 'z'],
-    3.0
-)
 
-swift_survey = Survey(
-    'Swift',
-    ['B', 'UVM2', 'UVW1', 'UVW2', 'U', 'V'],
-    5.0
-)
-
-twomass_survey = Survey(
-    '2MASS',
-    ['H', 'J', 'Ks'],
-    6.0
-)
 
 def gen_single_core(i):
+    lsst_survey = Survey(
+        'LSST',
+        ['u', 'g', 'r', 'i', 'z', 'y'],
+        4.0
+    )
+    ztf_survey = Survey(
+        'ZTF',
+        ['g', 'r'],
+        2.0 # band sampling coupled
+    )
+    panstarrs_survey = Survey(
+        'PanSTARRS',
+        ['g', 'r', 'i', 'z'],
+        3.0
+    )
+
+    swift_survey = Survey(
+        'Swift',
+        ['B', 'UVM2', 'UVW1', 'UVW2', 'U', 'V'],
+        5.0
+    )
+
+    twomass_survey = Survey(
+        '2MASS',
+        ['H', 'J', 'Ks'],
+        6.0
+    )
+
     generate_LCs_from_model(
         'default',
         [lsst_survey, ztf_survey, panstarrs_survey, swift_survey, twomass_survey],

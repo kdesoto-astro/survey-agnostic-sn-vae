@@ -76,10 +76,12 @@ def import_single_yse_lc(fn):
     # filter into ZTF and YSE LCs
     ztf_lc = df[(df.FLT == 'X') | (df.FLT == 'Y')]
     yse_lc = df[~df.index.isin(ztf_lc.index)]
+    # add joint lf (just from df)
 
-    lcs = {'ZTF': ztf_lc, 'YSE': yse_lc}
+    lcs = {'ZTF': ztf_lc, 'YSE': yse_lc} # add joint LC
     sr_lcs = {}
     
+    # first calculates peak of joint light curve
     for lc_survey in lcs:
         lc = lcs[lc_survey]
         lc = lc.dropna(axis=0, how='any')
@@ -119,7 +121,7 @@ def import_single_yse_lc(fn):
         sr_lc.group = hash(meta['NAME'])
         sr_lc.get_abs_mags()
         sr_lc.sort_lc()
-        pmjd = sr_lc.find_peak()
+        pmjd = sr_lc.find_peak() # replace with joint peak
         sr_lc.shift_lc(pmjd)
         sr_lc.correct_time_dilation()
         

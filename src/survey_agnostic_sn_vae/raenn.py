@@ -26,7 +26,7 @@ DEFAULT_LR = 1e-4
 print(torch.backends.mps.is_available())
 
     
-def contrastive_loss(samples, means, ids, distance='kl', temp=10.0):
+def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
     """Pushes multiple views of the same
     object together in the latent space.
     """
@@ -63,9 +63,18 @@ def contrastive_loss(samples, means, ids, distance='kl', temp=10.0):
         stddev1 = torch.exp(0.5*S_i)
         stddev2 = torch.exp(0.5*S_j)
         kl = torch.log(stddev2/stddev1) + (stddev1**2 + (Z_i - Z_j).pow(2)) / (2*stddev2**2) - 0.5
+        kl[kl > 1000.] = 1000.
         dists = torch.mean(kl, dim=-1)
-        # cap distances too large
-        dists[dists > 200.] = 200.
+    elif distance == 'mahalonobis':
+        pass
+    elif distance == 'wasserstein':
+        stddev1 = torch.exp(0.5*S_i)
+        stddev2 = torch.exp(0.5*S_j)
+        w_squared = torch.norm(Z_i - Z_j, dim=-1)**2 + torch.sum(stddev1**2 + stddev2**2 - 2*stddev1*stddev2, dim=-1)
+        dists = w_squared
+        dists[dists > 100.] = 100.
+        #print(torch.min(dists), torch.max(dists))
+        
     else:
         raise ValueError(f"distance metric {distance} not implemented!")
     
@@ -78,14 +87,12 @@ def contrastive_loss(samples, means, ids, distance='kl', temp=10.0):
         (denom_arr * exp_sims)[~no_match_idxs][:,~no_match_idxs],
         dim=1
     )
-    #rint(torch.min(num), torch.max(num))
-    l = -1 * torch.mean(
-        torch.log(num / denom)
-    )
-    print(torch.mean(num))
-    #l[torch.isnan(l)] = 1e3
-    #l[torch.isinf(l)] = 1e3
+    ratio = torch.log(num / denom)
+    #ratio[torch.isnan(ratio)] = -100.
+    #ratio[torch.isinf(ratio)] = -100.
     
+    l = -1 * torch.mean(ratio)
+
     return l
         
     
@@ -110,7 +117,7 @@ def loss_function(
         losses.append(kl_loss)
         
     if add_contrastive:
-        cl = contrastive_loss(log_var, mean, ids)
+        cl = 20.*contrastive_loss(log_var, mean, ids)
         losses.append(cl)
 
     return losses

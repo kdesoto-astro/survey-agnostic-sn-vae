@@ -116,7 +116,7 @@ def plot_latent_space(
                         matched_z1[[i,j]],
                         matched_z2[[i,j]],
                         color='red', linewidth=1,
-                        alpha= min(2*dist.item(), 1.0)
+                        alpha=0.2
                     )
     
     plt.scatter(s0, s1, s=1, color='k')

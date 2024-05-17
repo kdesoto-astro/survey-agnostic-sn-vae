@@ -1,7 +1,9 @@
 import os, glob
 import pandas as pd
 from survey_agnostic_sn_vae.preprocessing import LightCurve, save_lcs
+
 import numpy as np
+#import matplotlib.pyplot as plt
 
 DEFAULT_ZPT = 27.5
 # X for ZTF-*g*; Y for ZTF-*r*
@@ -60,7 +62,7 @@ def find_meta_start_of_data(fn):
                     meta[k] = row.split(":")[1].split("+")[0].strip()
             if row.strip() == '':
                 return i + 5, meta
-            
+
 def import_single_yse_lc(fn):
     """Imports single YSE SNANA file.
     """
@@ -70,31 +72,34 @@ def import_single_yse_lc(fn):
         on_bad_lines='skip',
         sep='\s+'
     )
-    
+
     df = df.drop(columns=['VARLIST:', 'FIELD', 'FLAG'])
-    
+
     # filter into ZTF and YSE LCs
     ztf_lc = df[(df.FLT == 'X') | (df.FLT == 'Y')]
     yse_lc = df[~df.index.isin(ztf_lc.index)]
-    # add joint lf (just from df)
+    joint_lc = df
 
-    lcs = {'ZTF': ztf_lc, 'YSE': yse_lc} # add joint LC
+    lcs = {'ZTF': ztf_lc, 'YSE': yse_lc, 'ZTF + YSE': joint_lc}
     sr_lcs = {}
-    
-    # first calculates peak of joint light curve
+
+    # first calculate peak of joint light curve
+    joint_peak_time = df['MJD'][df['FLUXCAL'].idxmax()]
+
     for lc_survey in lcs:
         lc = lcs[lc_survey]
         lc = lc.dropna(axis=0, how='any')
-        
-        t = lc.MJD.to_numpy()
+
+        # adjust t to be relative to joint LC peak
+        t = lc.MJD.to_numpy() - joint_peak_time
         f = lc.FLUXCAL.to_numpy()
         ferr = lc.FLUXCALERR.to_numpy()
         b = lc.FLT.to_numpy()
-        
+
         if len(t) < 5:
             print("SKIPPED T")
             continue
-            
+
         # variability cut
         if np.mean(ferr) >= np.std(f):
             print("SKIPPED A")
@@ -102,7 +107,7 @@ def import_single_yse_lc(fn):
         if 3 * np.mean(ferr) >= (np.max(f) - np.min(f)):
             print("SKIPPED B")
             continue
-        
+
         sr_lc = LightCurve(
             name=meta['NAME'],
             times=t,
@@ -124,13 +129,13 @@ def import_single_yse_lc(fn):
         pmjd = sr_lc.find_peak() # replace with joint peak
         sr_lc.shift_lc(pmjd)
         sr_lc.correct_time_dilation()
-        
+
         filt_list = np.unique(sr_lc.filters)
-        
+
         if len(filt_list) < 2:
             print("SKIPPED C")
             continue
-        
+
         sr_lc.wavelengths = np.zeros(len(filt_list))
         sr_lc.filt_widths = np.zeros(len(filt_list))
 
@@ -144,14 +149,27 @@ def import_single_yse_lc(fn):
             sr_lc.make_dense_LC(len(filt_list))
         except:
             continue
-            
+
         if len(sr_lc.dense_times) < 5:
             print("SKIPPED D")
             continue
 
+        # check for variability in dense LCs
+        dense_fluxes = sr_lc.dense_lc[:,:,0]
+        dense_fluxerrs = sr_lc.dense_lc[:,:,1]
+        variability_mask = (np.std(dense_fluxes, axis=0) > np.mean(dense_fluxerrs, axis=0)) # true means keep
+
+        # just throw out entire LC if none of the bands are good
+        if not np.any(variability_mask):
+            print("SKIPPED X")
+            continue
+
+        # otherwise, keep the good bands
+        sr_lc.dense_lc = sr_lc.dense_lc[:,variability_mask,:]
+
         sr_lc.tile()
         sr_lcs[lc_survey] = sr_lc
-        
+
     return sr_lcs
 
 
@@ -161,17 +179,20 @@ def generate_raenn_file(test_dir, save_dir):
     lcs = []
     for i, fn in enumerate(glob.glob(
         os.path.join(test_dir, "*.dat")
-    )):
+        )):
         if i % 100 == 0:
             print(i)
         lc_dict = import_single_yse_lc(fn)
         for k in lc_dict:
             lcs.append(lc_dict[k])
-    
+
     save_lcs(lcs, save_dir)
-    
-    
+
+
 if __name__ == "__main__":
     test_dir = '../../../data/yse_dr1_zenodo_snr_geq_4/'
+    #test_dir = '../data/yse_dr1_zenodo_snr_geq_4/'
+
     save_dir = '../../../data/superraenn/yse/'
+    #save_dir = '../data/superraenn/yse/'
     generate_raenn_file(test_dir, save_dir)

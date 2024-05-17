@@ -90,8 +90,7 @@ def import_single_yse_lc(fn):
         lc = lcs[lc_survey]
         lc = lc.dropna(axis=0, how='any')
 
-        # adjust t to be relative to joint LC peak
-        t = lc.MJD.to_numpy() - joint_peak_time
+        t = lc.MJD.to_numpy()
         f = lc.FLUXCAL.to_numpy()
         ferr = lc.FLUXCALERR.to_numpy()
         b = lc.FLT.to_numpy()
@@ -126,7 +125,8 @@ def import_single_yse_lc(fn):
         sr_lc.group = hash(meta['NAME'])
         sr_lc.get_abs_mags()
         sr_lc.sort_lc()
-        pmjd = sr_lc.find_peak() # replace with joint peak
+        #pmjd = sr_lc.find_peak() # replace with joint peak
+        pmjd = joint_peak_time
         sr_lc.shift_lc(pmjd)
         sr_lc.correct_time_dilation()
 

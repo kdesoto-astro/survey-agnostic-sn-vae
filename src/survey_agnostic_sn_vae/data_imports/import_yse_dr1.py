@@ -109,6 +109,7 @@ def import_single_yse_lc(fn):
 
         sr_lc = LightCurve(
             name=meta['NAME'],
+            survey=lc_survey,
             times=t,
             fluxes=f,
             flux_errs=ferr,
@@ -185,6 +186,7 @@ def generate_raenn_file(test_dir, save_dir):
         lc_dict = import_single_yse_lc(fn)
         for k in lc_dict:
             lcs.append(lc_dict[k])
+    print(len(lcs))
 
     save_lcs(lcs, save_dir)
 

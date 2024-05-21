@@ -5,6 +5,7 @@ from survey_agnostic_sn_vae.preprocessing import prep_input
 from survey_agnostic_sn_vae.raenn import SNDataset
 
 def weighted_mse_vectorized(y_true, y_pred, mask):
+    nfilts = 6
     # mask out 
     f_true = y_true[:,:,1:nfilts+1]
     err_true = y_true[:,:,1+nfilts:1+2*nfilts]
@@ -13,7 +14,7 @@ def weighted_mse_vectorized(y_true, y_pred, mask):
         torch.square((f_true - y_pred)/err_true)[~mask.bool()]
     )
     
-    reduced_mean = torch.mean(mean_per_lc)
+    reduced_mean = torch.median(mean_per_lc)
     return reduced_mean
     
 def calc_inter_modal_weighted_mse(model, dataset):
@@ -27,7 +28,7 @@ def calc_cross_modal_weighted_mse(model, dataset):
     """
     uids = torch.unique(dataset.ids)
     
-    mse = 0
+    mse = []
     skip_ct = 0
     for uid in uids:
         sub_ds = dataset[dataset.ids == uid]
@@ -50,9 +51,11 @@ def calc_cross_modal_weighted_mse(model, dataset):
         sub_mask = sub_ds[3][pairs[:,1]]
     
         sub_out, _, _, _ = model.forward(sub_i1, sub_i2)
-        mse += weighted_mse_vectorized(sub_init, sub_out, sub_mask)
+        mse.append(
+            weighted_mse_vectorized(sub_init, sub_out, sub_mask)
+        )
         
-    return mse.item()/(len(uids) - skip_ct)
+    return torch.median(torch.Tensor(mse)).item()
 
 
 if __name__ == "__main__":

@@ -26,7 +26,14 @@ DEFAULT_LR = 1e-4
 print(torch.backends.mps.is_available())
 
     
-def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
+def contrastive_loss(
+    samples,
+    means,
+    logvars,
+    ids,
+    distance='wasserstein',
+    temp=10.0
+):
     """Pushes multiple views of the same
     object together in the latent space.
     """
@@ -36,7 +43,12 @@ def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
     S_j = torch.transpose(S_i, 0, 1)
     
     Z_i = torch.unsqueeze(means, 0).repeat((N,1,1))
-    Z_j = torch.transpose(S_i, 0, 1)
+    Z_j = torch.transpose(Z_i, 0, 1)
+    
+    Sig_i = torch.unsqueeze(logvars, 0).repeat((N,1,1))
+    Sig_j = torch.transpose(Sig_i, 0, 1)
+    stddev1 = torch.exp(0.5*Sig_i)
+    stddev2 = torch.exp(0.5*Sig_j)
     
     # make "adjacency matrix" type thing for object IDs
     objid_mat = torch.unsqueeze(ids, 0).repeat((N,1))
@@ -56,24 +68,32 @@ def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
     if distance == 'cosine':
         cos_sim = nn.CosineSimilarity(dim=-1, eps=1e-6)
         dists = 1 - cos_sim(S_i, S_j)
+    
+    elif distance == 'cosine_means':
+        cos_sim = nn.CosineSimilarity(dim=-1, eps=1e-6)
+        dists = 1 - cos_sim(Z_i, Z_j)
+        
     elif distance == 'euclidean':
         dists = torch.norm(S_i - S_j, dim=-1)
         dists = torch.clamp(dists, min=1e-8)
+        
+    elif distance == 'euclidean_means':
+        dists = torch.norm(Z_i - Z_j, dim=-1)
+        dists = torch.clamp(dists, min=1e-8)
+        
     elif distance == 'kl':
-        stddev1 = torch.exp(0.5*S_i)
-        stddev2 = torch.exp(0.5*S_j)
         kl = torch.log(stddev2/stddev1) + (stddev1**2 + (Z_i - Z_j).pow(2)) / (2*stddev2**2) - 0.5
         kl[kl > 1000.] = 1000.
         dists = torch.mean(kl, dim=-1)
+        
     elif distance == 'mahalonobis':
-        pass
+        dists = torch.norm((S_i - Z_j)/ stddev2, dim=-1)
+        dists = torch.clamp(dists, max=50.0)
+        
     elif distance == 'wasserstein':
-        stddev1 = torch.exp(0.5*S_i)
-        stddev2 = torch.exp(0.5*S_j)
         w_squared = torch.norm(Z_i - Z_j, dim=-1)**2 + torch.sum(stddev1**2 + stddev2**2 - 2*stddev1*stddev2, dim=-1)
         dists = w_squared
         dists[dists > 100.] = 100.
-        #print(torch.min(dists), torch.max(dists))
         
     else:
         raise ValueError(f"distance metric {distance} not implemented!")
@@ -88,8 +108,6 @@ def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
         dim=1
     )
     ratio = torch.log(num / denom)
-    #ratio[torch.isnan(ratio)] = -100.
-    #ratio[torch.isinf(ratio)] = -100.
     
     l = -1 * torch.mean(ratio)
 
@@ -99,7 +117,8 @@ def contrastive_loss(samples, means, ids, distance='wasserstein', temp=10.0):
 def loss_function(
     y_true, y_pred, loss_mask, nfilts,
     mean, log_var, samples, ids,
-    add_kl=False, add_contrastive=False
+    add_kl=False, add_contrastive=False,
+    metric=None, temp=None,
 ):
     # mask out 
     f_true = y_true[:,:,1:nfilts+1]
@@ -117,7 +136,10 @@ def loss_function(
         losses.append(kl_loss)
         
     if add_contrastive:
-        cl = 20.*contrastive_loss(log_var, mean, ids)
+        cl = contrastive_loss(
+            samples, mean, log_var, ids,
+            distance=metric, temp=temp
+        )
         losses.append(cl)
 
     return losses
@@ -368,6 +390,7 @@ def train(
     model, optimizer, train_loader,
     test_loader, nfilts, epochs,
     add_kl=True, add_contrastive=True,
+    metric=None, temp=None,
     latent_space_plot_dir=None,
 ):
     if latent_space_plot_dir is not None:
@@ -384,7 +407,8 @@ def train(
             losses = loss_function(
                 x1, x_hat, x4, nfilts,
                 mean, log_var, z, x3,
-                add_kl=add_kl, add_contrastive=add_contrastive
+                add_kl=add_kl, add_contrastive=add_contrastive,
+                metric=metric, temp=temp
             )
             loss = sum(losses)
             
@@ -408,7 +432,8 @@ def train(
                 test_losses = loss_function(
                     x1, x_hat, x4, nfilts,
                     mean, log_var, z, x3,
-                    add_kl=add_kl, add_contrastive=add_contrastive
+                    add_kl=add_kl, add_contrastive=add_contrastive,
+                    metric=metric, temp=temp
                 )
                 loss2 = sum(test_losses)
                 test_loss += loss2.item()
@@ -458,6 +483,7 @@ def fit_model(
     device=DEFAULT_DEVICE,
     add_kl=True,
     add_contrastive=True,
+    metric=None, temp=None,
     latent_space_plot_dir=None,
 ):
     if latent_space_plot_dir is not None:
@@ -509,6 +535,7 @@ def fit_model(
     train(
         model, optimizer, train_loader, test_loader, nfilts,
         epochs=n_epochs, add_kl=add_kl, add_contrastive=add_contrastive,
+        metric=metric, temp=temp,
         latent_space_plot_dir=latent_space_plot_dir
     )
     

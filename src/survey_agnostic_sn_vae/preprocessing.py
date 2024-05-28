@@ -124,10 +124,14 @@ class LightCurve(object):
         self.times = self.times / (1.+self.redshift)
 
     def correct_extinction(self, wvs):
-        alams = extinction.fm07(wvs, self.mwebv)
+        Av_sfd = 2.742 * self.mwebv
+        band_wvs = 1.0 / (0.0001 * np.asarray(wvs))
+        alams = extinction.fm07(band_wvs, Av_sfd, unit='invum')
+        
         for i, alam in enumerate(alams):
-            gind = np.where(self.filters == str(i))
+            gind = (self.filters == i)
             self.abs_mags[gind] = self.abs_mags[gind] - alam
+            self.abs_lim_mags[gind] = self.abs_lim_mags[gind] - alam
 
     def add_LC_info(
         self, lim_mag_dict, zpt=27.5,
@@ -184,6 +188,7 @@ class LightCurve(object):
             tmp[self.filters == filt] = i
             self.ordered_abs_lim_mags[i] = mag_to_abs_mag(self.lim_mag_dict[filt], self.redshift)
         self.filters = tmp.astype(int)
+        self.filt_list = filt_list
 
     def make_dense_LC(self, nfilts):
         gp_mags = self.abs_mags - self.abs_lim_mags
@@ -393,6 +398,7 @@ def generate_superraenn_lc_file(
 
             sr_lc = LightCurve(
                 name=int(0.5*(i+j)*(i+j+1)+j), # cantor pairing function (fancy math)
+                survey=lc.survey.name,
                 times=t,
                 fluxes=f,
                 flux_errs=ferr,
@@ -520,14 +526,22 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
     lightcurves = np.load(input_lc_file, allow_pickle=True)['lcs']
     lengths = []
     ids = []
+    meta_dict = {
+        'ids': [],
+        'surveys': [],
+        'classes': []
+    }
+    
     for lightcurve in lightcurves:
         lengths.append(len(lightcurve.dense_lc))
-        ids.append(lightcurve.name)
-
-    ids = np.array(ids)
+        meta_dict['ids'].append(lightcurve.name)
+        meta_dict['surveys'].append(lightcurve.survey)
+        meta_dict['classes'].append(lightcurve.obj_type)
+        
+    for k in meta_dict:
+        meta_dict[k] = np.asarray(meta_dict[k])
 
     sequence_len = 32 #min(200, np.max(lengths))
-    print(sequence_len)
     lengths = np.clip(lengths, a_min=0, a_max=sequence_len).astype(int)
 
     nfilts = np.shape(lightcurves[0].dense_lc)[1]
@@ -638,5 +652,5 @@ def prep_input(input_lc_file, new_t_max=200.0, filler_err=3.0,
         np.array(sequence, dtype=np.float32),
         np.array(outseq_tiled, dtype=np.float32),
         np.array(loss_mask, dtype=np.float32),
-        ids, sequence_len, nfilts
+        meta_dict
     )

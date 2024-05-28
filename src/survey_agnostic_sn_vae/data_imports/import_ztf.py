@@ -1,8 +1,64 @@
 import pandas as pd
 import numpy as np
+import os
+
+from astropy.coordinates import SkyCoord
+from dustmaps.config import config as dustmaps_config
+from dustmaps.sfd import SFDQuery
+from superphot_plus.sfd import dust_filepath
 
 from superphot_plus.supernova_class import SupernovaClass as SnClass
 from superphot_plus.lightcurve import Lightcurve
+
+from survey_agnostic_sn_vae.preprocessing import save_lcs
+from survey_agnostic_sn_vae.data_generation.utils import convert_mag_to_flux
+from survey_agnostic_sn_vae.data_imports.import_helper import create_lc
+
+DEFAULT_ZPT = 26.3
+
+LIM_MAGS = {
+    'g': 20.8,
+    'r': 20.6
+}
+
+BAND_WIDTHS = {
+    'g':1317.15,
+    'r':1488.99
+}
+# lambda-cen
+BAND_WAVELENGTHS = {
+    'g': 4805.92,
+    'r': 6435.87,
+}
+
+def get_band_extinctions(ra, dec):
+    """Get g- and r-band extinctions in magnitudes for a single
+    supernova lightcurve based on right ascension (RA) and declination
+    (DEC).
+
+    Parameters
+    ----------
+    ra : float
+        The right ascension of the object of interest, in degrees.
+    dec : float
+        The declination of the object of interest, in degrees.
+    wvs : list or np.ndarray
+        Array of wavelengths, in angstroms.
+
+
+    Returns
+    -------
+    ext_dict : Dict
+        A dictionary mapping bands to extinction magnitudes for the given coordinates.
+    """
+    dustmaps_config["data_dir"] = dust_filepath
+    sfd = SFDQuery()
+
+    # First look up the amount of mw dust at this location
+    coords = SkyCoord(ra, dec, frame="icrs", unit="deg")
+      # from https://dustmaps.readthedocs.io/en/latest/examples.html
+    return sfd(coords)
+
 
 def prep_lcs_superraenn(
     dataset_csv,
@@ -16,6 +72,7 @@ def prep_lcs_superraenn(
 
     full_df = pd.read_csv(dataset_csv)
     all_names = full_df.NAME.to_numpy()
+    iau_names = full_df.IAU.to_numpy()
     labels = full_df.CLASS.to_numpy()
     redshifts = full_df.Z.to_numpy()
 
@@ -31,63 +88,75 @@ def prep_lcs_superraenn(
             continue
 
         l_canon = SnClass.canonicalize(labels[i])
-        l_oneword = l_canon.replace(" ", "")
-
+        """
         lc = Lightcurve.from_file(
             os.path.join(
                 data_dir,
                 name + ".npz"
             )
         )
-
-        sr_lc = LightCurve(
-            name,
-            lc.survey
-            lc.times[lc.bands != 'i'],
-            lc.fluxes[lc.bands != 'i'],
-            lc.flux_errors[lc.bands != 'i'],
-            lc.bands[lc.bands != 'i']
+        """
+        filename = os.path.join(
+            data_dir, name + ".csv"
         )
+        single_df = pd.read_csv(filename)
+        sub_df = single_df[["mjd", "ra", "dec", "fid", "magpsf", "sigmapsf"]]
+        pruned_df = sub_df.dropna(subset=["mjd", "fid", "magpsf", "sigmapsf"])
+        pruned_df2 = pruned_df.drop(
+            pruned_df[pruned_df['fid'] > 2].index
+        ) # remove i band
+        sorted_df = pruned_df2.sort_values(by=['mjd'])
+        sorted_df['bandpass'] = np.where(sorted_df.fid.to_numpy() == 1, 'g', 'r')
+        sorted_df = sorted_df.drop(columns=['fid',])
 
-        sr_lc.add_LC_info(
-            zpt=26.3,
-            redshift=redshifts[i],
-            lim_mag_dict={'g': 20.6, 'r': 20.8},
-            obj_type=l_canon
-        )
+        ra = np.nanmean(sorted_df.ra.to_numpy())
+        dec = np.nanmean(sorted_df.dec.to_numpy())
 
-        sr_lc.group = hash(name)
-        sr_lc.get_abs_mags()
-        sr_lc.sort_lc()
-        pmjd = sr_lc.find_peak()
-        sr_lc.shift_lc(pmjd)
-        sr_lc.correct_time_dilation()
-
-        filt_list = np.unique(sr_lc.filters)
-
-        if len(filt_list) < 2:
-            print("SKIPPED C")
-            continue
-
-        sr_lc.wavelengths = np.zeros(len(filt_list))
-        sr_lc.filt_widths = np.zeros(len(filt_list))
-
-        for j, f in enumerate(filt_list):
-            sr_lc.wavelengths[j] = BAND_WAVELENGTHS[f]
-            sr_lc.filt_widths[j] = BAND_WIDTHS[f]
-
-        sr_lc.filter_names_to_numbers(filt_list)
-        sr_lc.cut_lc()
+        if np.isnan(ra) or np.isnan(dec):
+            return None
+        
+        mwebv = get_band_extinctions(ra, dec)
+        
+        m = sorted_df.magpsf.to_numpy()
+        merr = sorted_df.sigmapsf.to_numpy()
+        b = sorted_df.bandpass.to_numpy()
+        t = sorted_df.mjd.to_numpy()
+        
+        f, ferr = convert_mag_to_flux(m, merr, 26.3)
+        
+        snr_mask = (f/ferr >= 4.0)
+        t = t[snr_mask]
+        f = f[snr_mask]
+        ferr = ferr[snr_mask]
+        b = b[snr_mask]
+        
+        meta = {
+            'MWEBV': mwebv,
+            'ZPT': 26.3,
+            'REDSHIFT_FINAL': redshifts[i],
+            'LIM_MAGS': LIM_MAGS,
+            'SURVEY': 'ZTF',
+            'SPEC_CLASS': l_canon,
+            'PEAK_TIME': t[np.argmax(f)],
+            'BAND_WAVELENGTHS': BAND_WAVELENGTHS,
+            'BAND_WIDTHS': BAND_WIDTHS
+        }
+        
         try:
-            sr_lc.make_dense_LC(len(filt_list))
+            if np.isnan(iau_names[i]):
+                meta['NAME'] = name
+                print("NO IAU")
+
+            else:
+                meta['NAME'] = iau_names[i]
         except:
-            continue
+            meta['NAME'] = iau_names[i]
+            
+        sr_lc = create_lc(
+            t, f, ferr, b, meta
+        )
+        if sr_lc is not None:
+            my_lcs.append(sr_lc)
 
-        if len(sr_lc.dense_times) < 5:
-            print("SKIPPED D")
-            continue
-
-        sr_lc.tile()
-        my_lcs.append(sr_lc)
-
+    print(len(my_lcs))
     save_lcs(my_lcs, save_dir)

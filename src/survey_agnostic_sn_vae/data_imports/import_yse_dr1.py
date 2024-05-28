@@ -1,6 +1,7 @@
 import os, glob
 import pandas as pd
-from survey_agnostic_sn_vae.preprocessing import LightCurve, save_lcs
+from survey_agnostic_sn_vae.preprocessing import save_lcs
+from survey_agnostic_sn_vae.data_imports.import_helper import create_lc
 
 import numpy as np
 #import matplotlib.pyplot as plt
@@ -19,12 +20,7 @@ LIM_MAGS = {
 }
 
 # TODO: change limmags in raenn to be per-datapoint
-"""
-LIM_MAGS = {
-    'ZTF': 20.8,
-    'YSE': 22.0
-} # use most sensitive band
-"""
+
 BAND_WIDTHS = {
     'g':1148.66,
     'r':1397.73,
@@ -67,6 +63,11 @@ def import_single_yse_lc(fn):
     """Imports single YSE SNANA file.
     """
     header, meta = find_meta_start_of_data(fn)
+    meta['LIM_MAGS'] = LIM_MAGS
+    meta['BAND_WIDTHS'] = BAND_WIDTHS
+    meta['BAND_WAVELENGTHS'] = BAND_WAVELENGTHS
+    meta['ZPT'] = DEFAULT_ZPT
+    
     df = pd.read_csv(
         fn, header=header,
         on_bad_lines='skip',
@@ -74,19 +75,30 @@ def import_single_yse_lc(fn):
     )
 
     df = df.drop(columns=['VARLIST:', 'FIELD', 'FLAG'])
-
+    joint_lc = df.copy()
+    
     # filter into ZTF and YSE LCs
     ztf_lc = df[(df.FLT == 'X') | (df.FLT == 'Y')]
     yse_lc = df[~df.index.isin(ztf_lc.index)]
-    joint_lc = df
-
-    lcs = {'ZTF': ztf_lc, 'YSE': yse_lc, 'ZTF + YSE': joint_lc}
+    
+    if len(ztf_lc.index) == 0:
+        lcs = {'YSE': yse_lc,}
+    elif len(yse_lc.index) == 0:
+        lcs = {'ZTF': ztf_lc,}
+    else:
+        lcs = {'ZTF': ztf_lc, 'YSE': yse_lc, 'joint': joint_lc}
+        
     sr_lcs = {}
 
     # first calculate peak of joint light curve
     joint_peak_time = df['MJD'][df['FLUXCAL'].idxmax()]
 
+    meta['PEAK_TIME'] = joint_peak_time
+    
     for lc_survey in lcs:
+        meta_survey = meta.copy()
+        meta_survey['SURVEY'] = lc_survey
+        
         lc = lcs[lc_survey]
         lc = lc.dropna(axis=0, how='any')
 
@@ -95,82 +107,12 @@ def import_single_yse_lc(fn):
         ferr = lc.FLUXCALERR.to_numpy()
         b = lc.FLT.to_numpy()
 
-        if len(t) < 5:
-            print("SKIPPED T")
-            continue
-
-        # variability cut
-        if np.mean(ferr) >= np.std(f):
-            print("SKIPPED A")
-            continue
-        if 3 * np.mean(ferr) >= (np.max(f) - np.min(f)):
-            print("SKIPPED B")
-            continue
-
-        sr_lc = LightCurve(
-            name=meta['NAME'],
-            survey=lc_survey,
-            times=t,
-            fluxes=f,
-            flux_errs=ferr,
-            filters=b,
+        sr_lc = create_lc(
+            t, f, ferr, b, meta_survey
         )
-        sr_lc.add_LC_info(
-            zpt=DEFAULT_ZPT,
-            mwebv=float(meta['MWEBV']),
-            redshift=float(meta['REDSHIFT_FINAL']),
-            lim_mag_dict=LIM_MAGS,
-            obj_type=meta['SPEC_CLASS']
-        )
-
-        sr_lc.group = hash(meta['NAME'])
-        sr_lc.get_abs_mags()
-        sr_lc.sort_lc()
-        #pmjd = sr_lc.find_peak() # replace with joint peak
-        pmjd = joint_peak_time
-        sr_lc.shift_lc(pmjd)
-        sr_lc.correct_time_dilation()
-
-        filt_list = np.unique(sr_lc.filters)
-
-        if len(filt_list) < 2:
-            print("SKIPPED C")
-            continue
-
-        sr_lc.wavelengths = np.zeros(len(filt_list))
-        sr_lc.filt_widths = np.zeros(len(filt_list))
-
-        for j, f in enumerate(filt_list):
-            sr_lc.wavelengths[j] = BAND_WAVELENGTHS[f]
-            sr_lc.filt_widths[j] = BAND_WIDTHS[f]
-
-        sr_lc.filter_names_to_numbers(filt_list)
-        sr_lc.cut_lc()
-        try:
-            sr_lc.make_dense_LC(len(filt_list))
-        except:
-            continue
-
-        if len(sr_lc.dense_times) < 5:
-            print("SKIPPED D")
-            continue
-
-        # check for variability in dense LCs
-        dense_fluxes = sr_lc.dense_lc[:,:,0]
-        dense_fluxerrs = sr_lc.dense_lc[:,:,1]
-        variability_mask = (np.std(dense_fluxes, axis=0) > np.mean(dense_fluxerrs, axis=0)) # true means keep
-
-        # just throw out entire LC if none of the bands are good
-        if not np.any(variability_mask):
-            print("SKIPPED X")
-            continue
-
-        # otherwise, keep the good bands
-        sr_lc.dense_lc = sr_lc.dense_lc[:,variability_mask,:]
-
-        sr_lc.tile()
-        sr_lcs[lc_survey] = sr_lc
-
+        if sr_lc is not None:
+            sr_lcs[lc_survey] = sr_lc
+            
     return sr_lcs
 
 

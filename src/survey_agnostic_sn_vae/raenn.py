@@ -136,7 +136,7 @@ def loss_function(
         losses.append(kl_loss)
         
     if add_contrastive:
-        cl = contrastive_loss(
+        cl = 5. * contrastive_loss(
             samples, mean, log_var, ids,
             distance=metric, temp=temp
         )
@@ -332,7 +332,7 @@ class VAE(nn.Module):
 
         logging.info(f'Saved model to {model_dir}')
         
-    def save_outputs(self, dataset, ids=None, outdir='./', model_dir='outputs/'):
+    def save_outputs(self, dataset, meta={}, outdir='./', model_dir='outputs/'):
         # Make output directory
         model_dir = os.path.join(outdir, model_dir)
         if not os.path.exists(model_dir):
@@ -354,12 +354,12 @@ class VAE(nn.Module):
             os.path.join(
                 model_dir,
                 f"out_{date}_{self.latent_dim}_{self.hidden_dim}.npz"
-            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, ids=ids
+            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, **meta
         )
         np.savez(
             os.path.join(
                 model_dir, "out.npz"
-            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, ids=ids
+            ), z_means=z_means, z_logvars=z_logvars, decodings=decodings, **meta
         )
         
         logging.info(f'Saved outputs to {model_dir}')
@@ -455,21 +455,21 @@ def train(
                 
             
 
-        if epoch % 10 == 0:
-            print(
-                "\tEpoch",
-                epoch + 1,
-                "\tTrain Loss: ",
-                train_loss/len(train_loader),
-                "\tVal Loss: ",
-                test_loss/len(test_loader)
-            )
-            print(
-                '\tTrain',
-                [x.item() for x in losses],
-                '\tTest',
-                [x.item() for x in test_losses]
-            )
+        #if epoch % 10 == 0:
+        print(
+            "\tEpoch",
+            epoch + 1,
+            "\tTrain Loss: ",
+            train_loss/len(train_loader),
+            "\tVal Loss: ",
+            test_loss/len(test_loader)
+        )
+        print(
+            '\tTrain',
+            [x.item() for x in losses],
+            '\tTest',
+            [x.item() for x in test_losses]
+        )
                 
     return train_loss/len(train_loader), test_loss/len(test_loader)
 

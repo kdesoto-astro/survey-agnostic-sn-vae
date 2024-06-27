@@ -39,7 +39,6 @@ BAND_WAVELENGTHS = {
     'Y': 6435.87,
 }
 
-
 def find_meta_start_of_data(fn):
     """Helper function for YSE fn import.
     """
@@ -54,7 +53,7 @@ def find_meta_start_of_data(fn):
     with open(fn, 'r') as f:
         for i, row in enumerate(f):
             for k in meta_keys:
-                if k in row:
+                if k+":" in row:
                     meta[k] = row.split(":")[1].split("+")[0].strip()
             if row.strip() == '':
                 return i + 5, meta

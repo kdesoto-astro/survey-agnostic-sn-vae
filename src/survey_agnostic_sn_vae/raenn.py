@@ -136,7 +136,8 @@ def loss_function(
         losses.append(kl_loss)
         
     if add_contrastive:
-        cl = 5. * contrastive_loss(
+        #cl = 5. * contrastive_loss(
+        cl = contrastive_loss(
             samples, mean, log_var, ids,
             distance=metric, temp=temp
         )
@@ -455,21 +456,21 @@ def train(
                 
             
 
-        #if epoch % 10 == 0:
-        print(
-            "\tEpoch",
-            epoch + 1,
-            "\tTrain Loss: ",
-            train_loss/len(train_loader),
-            "\tVal Loss: ",
-            test_loss/len(test_loader)
-        )
-        print(
-            '\tTrain',
-            [x.item() for x in losses],
-            '\tTest',
-            [x.item() for x in test_losses]
-        )
+        if epoch % 10 == 0:
+            print(
+                "\tEpoch",
+                epoch + 1,
+                "\tTrain Loss: ",
+                train_loss/len(train_loader),
+                "\tVal Loss: ",
+                test_loss/len(test_loader)
+            )
+            print(
+                '\tTrain',
+                [x.item() for x in losses],
+                '\tTest',
+                [x.item() for x in test_losses]
+            )
                 
     return train_loss/len(train_loader), test_loss/len(test_loader)
 

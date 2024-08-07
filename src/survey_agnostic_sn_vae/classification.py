@@ -271,7 +271,7 @@ def hxe(features, features_err, types):
     optimizer = torch.optim.AdamW(model.parameters(), lr = 0.001)
     model.train()
     epochs = 10 # you'll probably need more to get good results but it's kinda slow
-    batch_size = 1 # I get a segfault if this >1
+    batch_size = 4 # I get a segfault if this >1
     for epoch in range(epochs):
         permutation = torch.randperm(X_train.size()[0])
 
@@ -319,7 +319,7 @@ def hxe(features, features_err, types):
     plt.show()
 
 if __name__ == '__main__':
-    features, features_err, types = get_data("/Users/anasofiauzsoy/Desktop/data/superraenn/yse/out.npz", data_type = '4way')
+    features, features_err, types = get_data("/Users/kdesoto/python_repos/survey-agnostic-sn-vae/data/superraenn/yse/outputs/out.npz", data_type = '4way')
     vanilla_rf(features, features_err, types)
     vanilla_mlp(features, features_err, types)
     hxe(features, features_err, types)

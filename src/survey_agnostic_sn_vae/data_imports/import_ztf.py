@@ -8,7 +8,8 @@ from dustmaps.sfd import SFDQuery
 from superphot_plus.sfd import dust_filepath
 
 from superphot_plus.supernova_class import SupernovaClass as SnClass
-from superphot_plus.lightcurve import Lightcurve
+from snapi.query_agents import TNSQueryAgent, ALeRCEQueryAgent, ANTARESQueryAgent
+from snapi.transient import Transient
 
 from survey_agnostic_sn_vae.preprocessing import save_lcs
 from survey_agnostic_sn_vae.data_generation.utils import convert_mag_to_flux
@@ -60,103 +61,88 @@ def get_band_extinctions(ra, dec):
     return sfd(coords)
 
 
-def prep_lcs_superraenn(
-    dataset_csv,
-    probs_csv,
-    data_dir,
+def generate_ztf_transients(
     save_dir,
 ):
-    """Run equivalent of superraenn-prep on processed light curves."""
+    """Generate ZTF transients for the VAE."""
     print("STARTS")
     os.makedirs(save_dir, exist_ok=True)
 
-    full_df = pd.read_csv(dataset_csv)
-    all_names = full_df.NAME.to_numpy()
-    iau_names = full_df.IAU.to_numpy()
-    labels = full_df.CLASS.to_numpy()
-    redshifts = full_df.Z.to_numpy()
+    tns_agent = TNSQueryAgent()
+    alerce_agent = ALeRCEQueryAgent()
+    antares_agent = ANTARESQueryAgent()
 
-    final_names = pd.read_csv(probs_csv).Name.to_numpy()
+    all_names = tns_agent.retrieve_all_names() # only spectroscopically classified
 
-    my_lcs = []
+    for i, n in enumerate(all_names):
+        if i % 1000 == 0:
+            print(f"Processed {i} of {len(all_names)} objects.")
+        # if file exists already, just skip
+        #if os.path.exists(os.path.join(save_dir, n+".hdf5")):
+        #    print(f"SKIPPED {n}: File already exists")
+        #    continue
+        transient = Transient(iid=n)
+        qr_tns, success = tns_agent.query_transient(transient, local=True) # we dont want spectra
+        if not success:
+            print("SKIPPED {n}: TNS query failed")
+            continue
+        for result in qr_tns:
+            transient.ingest_query_info(result.to_dict())
+        if transient.spec_class not in ["SN II", "SN IIL", "SN IIP"]:
+            continue
+        qr_alerce, success = alerce_agent.query_transient(transient)
+        if not success:
+            print(f"SKIPPED {n}: ALeRCE query failed")
+            continue
+        for result in qr_alerce:
+            transient.ingest_query_info(result.to_dict())
 
-    for i, name in enumerate(all_names):
-        if i % 500 == 0:
-            print(i)
+        qr_antares, success = antares_agent.query_transient(transient)
+        if not success:
+            print(f"SKIPPED {n}: ANTARES query failed")
+            continue
+        for result in qr_antares:
+            transient.ingest_query_info(result.to_dict())
 
-        if name not in final_names:
+        # quality cuts
+        photometry = transient.photometry.filter_by_instrument("ZTF")
+        try:
+            r_lc = [lc for lc in photometry.light_curves if str(lc.filter) == "ZTF_r"][0]
+            g_lc = [lc for lc in photometry.light_curves if str(lc.filter) == "ZTF_g"][0]
+        except IndexError:
+            print(f"SKIPPED {n}: Missing a band")
+            continue
+        
+        good_quality = True
+        for lc in [r_lc, g_lc]:
+            high_snr_detections = lc.detections[lc.detections['mag_unc'] <= (5 / 8. / np.log(10))] # SNR >= 4
+
+            # number of high-SNR detections cut
+            if len(high_snr_detections) < 5:
+                print(f"SKIPPED {n}: Not enough high-SNR detections")
+                good_quality = False
+                break
+
+            # variability cut
+            if (
+                np.max(high_snr_detections['mag']) - np.min(high_snr_detections['mag'])
+             ) < 3 * np.mean(high_snr_detections['mag_unc']):
+                print(f"SKIPPED {n}: Amplitude too small")
+                good_quality = False
+                break
+
+            # second variability cut
+            if np.std(high_snr_detections['mag']) < np.mean(high_snr_detections['mag_unc']):
+                print(f"SKIPPED {n}: Variability too small")
+                good_quality = False
+                break
+
+        if not good_quality:
             continue
 
-        l_canon = SnClass.canonicalize(labels[i])
-        """
-        lc = Lightcurve.from_file(
-            os.path.join(
-                data_dir,
-                name + ".npz"
-            )
-        )
-        """
-        filename = os.path.join(
-            data_dir, name + ".csv"
-        )
-        single_df = pd.read_csv(filename)
-        sub_df = single_df[["mjd", "ra", "dec", "fid", "magpsf", "sigmapsf"]]
-        pruned_df = sub_df.dropna(subset=["mjd", "fid", "magpsf", "sigmapsf"])
-        pruned_df2 = pruned_df.drop(
-            pruned_df[pruned_df['fid'] > 2].index
-        ) # remove i band
-        sorted_df = pruned_df2.sort_values(by=['mjd'])
-        sorted_df['bandpass'] = np.where(sorted_df.fid.to_numpy() == 1, 'g', 'r')
-        sorted_df = sorted_df.drop(columns=['fid',])
-
-        ra = np.nanmean(sorted_df.ra.to_numpy())
-        dec = np.nanmean(sorted_df.dec.to_numpy())
-
-        if np.isnan(ra) or np.isnan(dec):
-            return None
+        transient.spec_class = SnClass.canonicalize(transient.spec_class)
+        transient.save(os.path.join(save_dir, n+".hdf5"))
         
-        mwebv = get_band_extinctions(ra, dec)
-        
-        m = sorted_df.magpsf.to_numpy()
-        merr = sorted_df.sigmapsf.to_numpy()
-        b = sorted_df.bandpass.to_numpy()
-        t = sorted_df.mjd.to_numpy()
-        
-        f, ferr = convert_mag_to_flux(m, merr, 26.3)
-        
-        snr_mask = (f/ferr >= 4.0)
-        t = t[snr_mask]
-        f = f[snr_mask]
-        ferr = ferr[snr_mask]
-        b = b[snr_mask]
-        
-        meta = {
-            'MWEBV': mwebv,
-            'ZPT': 26.3,
-            'REDSHIFT_FINAL': redshifts[i],
-            'LIM_MAGS': LIM_MAGS,
-            'SURVEY': 'ZTF',
-            'SPEC_CLASS': l_canon,
-            'PEAK_TIME': t[np.argmax(f)],
-            'BAND_WAVELENGTHS': BAND_WAVELENGTHS,
-            'BAND_WIDTHS': BAND_WIDTHS
-        }
-        
-        try:
-            if np.isnan(iau_names[i]):
-                meta['NAME'] = name
-                print("NO IAU")
-
-            else:
-                meta['NAME'] = iau_names[i]
-        except:
-            meta['NAME'] = iau_names[i]
-            
-        sr_lc = create_lc(
-            t, f, ferr, b, meta
-        )
-        if sr_lc is not None:
-            my_lcs.append(sr_lc)
-
-    print(len(my_lcs))
-    save_lcs(my_lcs, save_dir)
+        # TODO: convert band names to ints
+        # TODO: mwebv = get_band_extinctions(ra, dec)
+        # TODO: add lim_mags to either Filter or LightCurve/Photometry

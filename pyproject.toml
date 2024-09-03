@@ -21,7 +21,7 @@ dependencies = [
     "numpy",
     "mosfit",
     "astrocats",
-    "mpi4py"
+    "mpi4py",
     "six",
     "jax",
     "jaxlib"

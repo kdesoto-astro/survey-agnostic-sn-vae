@@ -3,8 +3,8 @@ import collections
 import itertools
 import jax
 
-from survey_agnostic_sn_vae.custom_nn_layers.data_adapter_utils import get_data_adapter, ddistribution
-from survey_agnostic_sn_vae.custom_nn_layers import tree
+from survey_agnostic_sn_vae.archival.data_adapter_utils import get_data_adapter, ddistribution
+from survey_agnostic_sn_vae.archival import tree
 
 def _distribute_data(data):
     distribution = ddistribution()

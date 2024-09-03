@@ -4,8 +4,8 @@ import math
 import numpy as np
 
 from keras import backend
-from survey_agnostic_sn_vae.custom_nn_layers import data_adapter_utils
-from survey_agnostic_sn_vae.custom_nn_layers import tree
+from survey_agnostic_sn_vae.archival import data_adapter_utils
+from survey_agnostic_sn_vae.archival import tree
 
 try:
     import pandas

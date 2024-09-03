@@ -6,9 +6,9 @@ import jax.numpy as jnp
 import jax
 
 from survey_agnostic_sn_vae.custom_nn_layers import array_slicing
-from survey_agnostic_sn_vae.custom_nn_layers import data_adapter_utils
-from survey_agnostic_sn_vae.custom_nn_layers import tree
-from survey_agnostic_sn_vae.custom_nn_layers.data_adapter import DataAdapter
+from survey_agnostic_sn_vae.archival import data_adapter_utils
+from survey_agnostic_sn_vae.archival import tree
+from survey_agnostic_sn_vae.archival.data_adapter import DataAdapter
 
 
 PYTHON_DTYPES_MAP = {

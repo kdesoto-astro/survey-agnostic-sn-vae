@@ -1,8 +1,8 @@
 import jax
 from keras import Model, StatelessScope
 
-from survey_agnostic_sn_vae.custom_nn_layers import data_adapter_utils
-from survey_agnostic_sn_vae.custom_nn_layers import tree
+from survey_agnostic_sn_vae.archival import data_adapter_utils
+from survey_agnostic_sn_vae.archival import tree
 
 #jax.config.update('jax_disable_jit', True)
 

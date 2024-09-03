@@ -4,8 +4,8 @@ import pandas
 
 from keras import backend
 
-from survey_agnostic_sn_vae.custom_nn_layers.tree import keras_export
-from survey_agnostic_sn_vae.custom_nn_layers import tree
+from survey_agnostic_sn_vae.archival.tree import keras_export
+from survey_agnostic_sn_vae.archival import tree
 from survey_agnostic_sn_vae.custom_nn_layers.array_data_adapter import ArrayDataAdapter
 
 NUM_BATCHES_FOR_TENSOR_SPEC = 2

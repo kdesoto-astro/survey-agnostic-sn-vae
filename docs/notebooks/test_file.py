@@ -1,7 +1,7 @@
 from survey_agnostic_sn_vae.preprocessing import prep_input
-from survey_agnostic_sn_vae.raenn import *
-from survey_agnostic_sn_vae.custom_nn_layers.kl_loss import SamplingLayer
-from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLoss
+from survey_agnostic_sn_vae.archival.raenn import *
+from survey_agnostic_sn_vae.archival.kl_loss import SamplingLayer
+from survey_agnostic_sn_vae.archival.recon_loss import ReconstructionLoss
 import pretty_errors
 import time
 from torch.profiler import profile, record_function, ProfilerActivity

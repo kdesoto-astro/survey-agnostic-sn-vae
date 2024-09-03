@@ -4,28 +4,16 @@ import glob
 import numpy as np
 from astropy.timeseries import TimeSeries
 from astropy.time import Time
+import astropy.units as u
 import pandas as pd
 
 from snapi import Filter, LightCurve, Photometry, Transient
 
-from survey_agnostic_sn_vae.preprocessing import save_lcs
-from survey_agnostic_sn_vae.data_imports.import_helper import create_lc
 #import matplotlib.pyplot as plt
 
 DEFAULT_ZPT = 27.5
 # X for ZTF-*g*; Y for ZTF-*r*
 # no y-band for Panstarrs
-
-LIM_MAGS = {
-    'g': 22.0,
-    'r': 21.8,
-    'i': 21.5,
-    'z': 20.9,
-    'X': 20.8,
-    'Y': 20.6
-}
-
-# TODO: change limmags in raenn to be per-datapoint
 
 BAND_WIDTHS = {
     'g':1148.66,
@@ -33,16 +21,16 @@ BAND_WIDTHS = {
     'i':1292.39,
     'z':1038.82,
     'X':1317.15,
-    'Y':1488.99
+    'Y':1553.43,
 }
-# lambda-cen
+# lambda-eff
 BAND_WAVELENGTHS = {
-    'g': 4936.01,
-    'r': 6206.17,
-    'i': 7553.48,
-    'z': 8704.75,
-    'X': 4805.92,
-    'Y': 6435.87,
+    'g': 4810.16,
+    'r': 6155.47,
+    'i': 7503.03,
+    'z': 8668.36,
+    'X': 4746.48,
+    'Y': 6366.38,
 }
 
 def find_meta_start_of_data(fn):
@@ -62,7 +50,7 @@ def find_meta_start_of_data(fn):
                 if k+":" in row:
                     meta[k] = row.split(":")[1].split("+")[0].strip()
             if row.strip() == '':
-                return i + 5, meta
+                return i + 6, meta
 
 def import_single_yse_lc(fn):
     """Imports single YSE SNANA file.
@@ -71,14 +59,14 @@ def import_single_yse_lc(fn):
 
     lcs = []
 
-    df = pd.read_csv(fn, skiprows=header, delim_whitespace=True)
+    df = pd.read_csv(fn, skiprows=header, delim_whitespace=True, skipfooter=1)
     df = df.drop(columns=['VARLIST:', 'FIELD', 'FLAG'])
     t = Time(df['MJD'], format='mjd').datetime
     df.set_index(pd.DatetimeIndex(t, name='time'), inplace=True)
-    df['fluxes'] = df['FLUXCAL']
-    df['flux_errs'] = df['FLUXCALERR']
-    df['zpts'] = DEFAULT_ZPT
-    df = df[['fluxes', 'flux_errs', 'zpts', 'FLT']]
+    df['flux'] = df['FLUXCAL']
+    df['flux_unc'] = df['FLUXCALERR']
+    df['zpt'] = DEFAULT_ZPT
+    df = df[['flux', 'flux_unc', 'zpt', 'FLT']]
 
     # convert to astropy Timeseries
     for b in np.unique(df['FLT']):
@@ -94,13 +82,17 @@ def import_single_yse_lc(fn):
         filt = Filter(
             band=b_true,
             instrument = 'ZTF' if b in ['X', 'Y'] else 'YSE',
-            center=BAND_WAVELENGTHS[b],
-            width=BAND_WIDTHS[b],
+            center=BAND_WAVELENGTHS[b] * u.AA,
+            width=BAND_WIDTHS[b] * u.AA,
         )
         lc = LightCurve(
             ts, filt=filt
         )
-        lcs.append(lc)
+        lc.calibrate_fluxes(23.90)
+        # absolute magnitudes
+        abs_lc = lc.absolute(float(meta['REDSHIFT_FINAL']))
+        # correct for extinction
+        lcs.append(abs_lc)
     return lcs, meta
 
 
@@ -122,30 +114,38 @@ def generate_yse_transients(test_dir, save_dir):
         prefix = os.path.basename(fn).split(".")[0]
         if os.path.exists(os.path.join(save_dir, prefix+".hdf5")):
             transient = Transient.load(os.path.join(save_dir, prefix+".hdf5"))
-            photometry = transient.photometry
-            if photometry is not None:
+            if transient.coordinates is not None: # import_ztf.py generated file
+                photometry = transient.photometry.filter_by_instrument("ZTF")
+                new_lcs = set()
                 for lc in lcs:
-                    photometry.add_lightcurve(lc)
-            else:
-                photometry = Photometry(lcs)
-            merged_transient = Transient(
-                iid=prefix,
-                ra=transient.ra,
-                dec=transient.dec,
-                redshift=transient.redshift,
-                spec_class=transient.spec_class,
-                internal_names=transient.internal_names,
-                photometry=photometry
+                    new_lc = lc.correct_extinction(coordinates=transient.coordinates) # SO IT ALIGNS
+                    photometry.add_lightcurve(new_lc)
+                merged_transient = Transient(
+                    iid=prefix,
+                    ra=transient.coordinates.ra,
+                    dec=transient.coordinates.dec,
+                    redshift=transient.redshift,
+                    spec_class=transient.spec_class,
+                    internal_names=transient.internal_names,
+                    photometry=photometry
+                )
+                merged_transient.mwebv = float(meta['MWEBV'])
+                merged_transient.save(os.path.join(save_dir, prefix+".hdf5"))
+                continue
+
+        new_lcs = set()
+        for lc in lcs:
+            new_lcs.add(
+                lc.correct_extinction(mwebv=float(meta['MWEBV']))
             )
-            merged_transient.save(os.path.join(save_dir, prefix+".hdf5"))
-        else:
-            transient = Transient(
-                iid=prefix,
-                redshift=meta['REDSHIFT_FINAL'],
-                spec_class=meta['SPEC_CLASS'], # TODO: broad or not? canonicalize?
-                photometry=Photometry(lcs) # TODO: add MWEBV
-            )
-            transient.save(os.path.join(save_dir, prefix+".hdf5"))
+        transient = Transient(
+            iid=prefix,
+            redshift=meta['REDSHIFT_FINAL'],
+            spec_class=meta['SPEC_CLASS'], # TODO: broad or not? canonicalize?
+            photometry=Photometry(lcs),
+        )
+        transient.mwebv = float(meta['MWEBV'])
+        transient.save(os.path.join(save_dir, prefix+".hdf5"))
 
 
 if __name__ == "__main__":

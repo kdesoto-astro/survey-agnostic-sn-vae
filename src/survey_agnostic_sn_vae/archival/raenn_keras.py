@@ -21,14 +21,15 @@ import pretty_errors
 import math
 import jax
 
+from survey_agnostic_sn_vae.archival import data_adapter_utils, tree
 from survey_agnostic_sn_vae.preprocessing import prep_input
 #from survey_agnostic_sn_vae.custom_nn_layers.sim_loss import SimilarityLossLayer
-from survey_agnostic_sn_vae.custom_nn_layers.kl_loss import SamplingLayer, AnnealingCallback
-from survey_agnostic_sn_vae.custom_nn_layers.recon_loss import ReconstructionLoss
-from survey_agnostic_sn_vae.custom_nn_layers.jax_gru import GRUHaiku
-from survey_agnostic_sn_vae.custom_nn_layers.custom_jax_model import JAXModel
-from survey_agnostic_sn_vae.custom_nn_layers.jax_epoch_iterator import JAXEpochIterator
-from survey_agnostic_sn_vae.custom_nn_layers import tree, array_slicing, data_adapter_utils
+from survey_agnostic_sn_vae.archival.kl_loss import SamplingLayer, AnnealingCallback
+from survey_agnostic_sn_vae.archival.recon_loss import ReconstructionLoss
+from survey_agnostic_sn_vae.archival.jax_gru import GRUHaiku
+from survey_agnostic_sn_vae.archival.custom_jax_model import JAXModel
+from survey_agnostic_sn_vae.archival.jax_epoch_iterator import JAXEpochIterator
+from survey_agnostic_sn_vae.custom_nn_layers import array_slicing
 
 
 

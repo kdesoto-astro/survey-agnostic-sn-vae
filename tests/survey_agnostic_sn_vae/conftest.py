@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from survey_agnostic_sn_vae.raenn import VAE
+from survey_agnostic_sn_vae.archival.raenn import VAE
 from survey_agnostic_sn_vae.preprocessing import (
     calc_outseq,
     LightCurve

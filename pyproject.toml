@@ -22,6 +22,9 @@ dependencies = [
     "mosfit",
     "astrocats",
     "mpi4py"
+    "six",
+    "jax",
+    "jaxlib"
 ]
 
 [project.urls]

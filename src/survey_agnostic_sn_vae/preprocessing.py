@@ -71,6 +71,9 @@ def prep_input(
             photometry = transient.photometry
             if filter_instrument is not None:
                 photometry.filter_by_instrument(filter_instrument)
+            if len(photometry) < 2: # we do need at least 2 bands
+                dense_arrs[i, :, :] = np.nan
+                continue
             if len(photometry) > 6: # randomly select 6
                 rand_idx = np.random.choice(len(photometry), 6, replace=False)
                 photometry = Photometry(np.array(list(photometry.light_curves))[rand_idx])
@@ -97,6 +100,7 @@ def prep_input(
 
     # filter out nan rows
     dense_arrs = dense_arrs[~np.all(np.isnan(dense_arrs), axis=(1,2))]
+    print(f"New number of events: {len(dense_arrs)}")
 
     # Flip because who needs negative magnitudes
     dense_arrs[:, :, 1:nfiltsp1] = -1.0 * dense_arrs[:, :, 1:nfiltsp1]

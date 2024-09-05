@@ -7,8 +7,10 @@ import jax.numpy as jnp
 
 from survey_agnostic_sn_vae.autoencoder.raenn_equinox import (
     evaluate, generate_decoder_input,
-    reconstruction_loss
+    reconstruction_loss,
+    dataloader
 )
+from survey_agnostic_sn_vae.autoencoder.contrastive_loss import contrastive_loss
 
 def plot_decodings(
     encoder_inputs,
@@ -98,7 +100,7 @@ def plot_decodings(
 
         yield fig, ax
 
-def add_ellipse(ax, center, semimajor, semiminor, n_points=100, formatter=None):
+def add_ellipse(ax, center, semimajor, semiminor, n_points=20, formatter=None):
     if formatter is None:
         formatter = Formatter()
     theta = np.linspace(0, 2*np.pi, n_points)
@@ -109,7 +111,7 @@ def add_ellipse(ax, center, semimajor, semiminor, n_points=100, formatter=None):
     return ax
 
 def plot_latent_space_helper(
-        means, logvars, matches=None
+        means, logvars, matches=None, samples=None
     ):
     """plot latent space given the means and log-variances."""
     fig, ax = plt.subplots()
@@ -124,47 +126,64 @@ def plot_latent_space_helper(
     for i, _ in enumerate(m0):
         center = (m0[i], m1[i])
         ax = add_ellipse(ax, center, r0[i], r1[i], formatter=formatter)
-        
-    if matches:
+    
+    formatter.rotate_colors()
+    if matches is not None:
         for uid in jnp.unique(matches):
             matched_z1 = m0[matches == uid]
             matched_z2 = m1[matches == uid]
             N = len(matched_z1)
             for i in range(N):
                 for j in range(i+1, N):
-                    dist = jnp.sqrt((
+                    dist = float(jnp.sqrt((
                         matched_z1[i] - matched_z1[j]
                     )**2 + (
                         matched_z2[i] - matched_z2[j]
-                    )**2)
-                    dist[jnp.isnan(dist)] = 1
+                    )**2))
+                    if np.isnan(dist) or dist > 1:
+                        dist = 1.0
                     ax.plot(
-                        matched_z1[[i,j]],
-                        matched_z2[[i,j]],
+                        [matched_z1[i], matched_z1[j]],
+                        [matched_z2[i], matched_z2[j]],
                         color=formatter.edge_color, linewidth=1,
-                        alpha=0.2
+                        alpha=dist
                     )
+        cl = contrastive_loss(
+            samples, means, logvars, matches,
+            distance='mahalonobis',
+            temp=1.0,
+        )
+        ax.set_title(f"Contrastive Loss: {cl}")
+    """
     ax.scatter(
         m0, m1,
         s=10,
         color=formatter.edge_color, alpha=1,
         marker=formatter.marker_style
     )
-    #ax.set_xlim((-1, 1))
-    #ax.set_ylim((-1, 1))
+    """
+    ax.set_xlim((-2, 2))
+    ax.set_ylim((-2, 2))
     formatter.make_plot_pretty(ax)
     return fig, ax
 
 def plot_latent_space(
     encoder_inputs,
+    ids,
     model,
-    matches=None,
 ):
     """Plot latent space from encoder inputs and ids."""
-    result_dict = evaluate(model, encoder_inputs[:100])
+    # convert ids to numerics
+    _, ids = np.unique(ids, return_inverse=True)
+    encoder_data, _, matches, _, _ = dataloader(encoder_inputs, ids, shuffle_key=None)
+ 
+    #halfway_idx = len(encoder_data) // 2
+    #idxs = jnp.concatenate((jnp.arange(halfway_idx-100, halfway_idx), jnp.arange(len(encoder), halfway_idx+100)))
+    result_dict = evaluate(model, encoder_data)
     means = result_dict['mu']
     logvars = result_dict['logvar']
-    fig, ax = plot_latent_space_helper(means, logvars, matches=matches)
+    samples = result_dict['z']
+    fig, ax = plot_latent_space_helper(means, logvars, samples=samples, matches=matches)
     return fig, ax
 
 

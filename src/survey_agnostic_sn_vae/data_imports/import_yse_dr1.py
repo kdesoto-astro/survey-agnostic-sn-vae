@@ -1,25 +1,19 @@
-import os, glob
-import pandas as pd
-from survey_agnostic_sn_vae.preprocessing import save_lcs
-from survey_agnostic_sn_vae.data_imports.import_helper import create_lc
+import os
+import glob
 
 import numpy as np
+from astropy.timeseries import TimeSeries
+from astropy.time import Time
+import astropy.units as u
+import pandas as pd
+
+from snapi import Filter, LightCurve, Photometry, Transient
+
 #import matplotlib.pyplot as plt
 
 DEFAULT_ZPT = 27.5
 # X for ZTF-*g*; Y for ZTF-*r*
 # no y-band for Panstarrs
-
-LIM_MAGS = {
-    'g': 22.0,
-    'r': 21.8,
-    'i': 21.5,
-    'z': 20.9,
-    'X': 20.8,
-    'Y': 20.6
-}
-
-# TODO: change limmags in raenn to be per-datapoint
 
 BAND_WIDTHS = {
     'g':1148.66,
@@ -27,16 +21,16 @@ BAND_WIDTHS = {
     'i':1292.39,
     'z':1038.82,
     'X':1317.15,
-    'Y':1488.99
+    'Y':1553.43,
 }
-# lambda-cen
+# lambda-eff
 BAND_WAVELENGTHS = {
-    'g': 4936.01,
-    'r': 6206.17,
-    'i': 7553.48,
-    'z': 8704.75,
-    'X': 4805.92,
-    'Y': 6435.87,
+    'g': 4810.16,
+    'r': 6155.47,
+    'i': 7503.03,
+    'z': 8668.36,
+    'X': 4746.48,
+    'Y': 6366.38,
 }
 
 def find_meta_start_of_data(fn):
@@ -50,92 +44,111 @@ def find_meta_start_of_data(fn):
         'SPEC_CLASS',
         'SPEC_CLASS_BROAD'
     ]
-    with open(fn, 'r') as f:
+    with open(fn, 'r', encoding='utf-8') as f:
         for i, row in enumerate(f):
             for k in meta_keys:
                 if k+":" in row:
                     meta[k] = row.split(":")[1].split("+")[0].strip()
             if row.strip() == '':
-                return i + 5, meta
+                return i + 6, meta
 
 def import_single_yse_lc(fn):
     """Imports single YSE SNANA file.
     """
     header, meta = find_meta_start_of_data(fn)
-    meta['LIM_MAGS'] = LIM_MAGS
-    meta['BAND_WIDTHS'] = BAND_WIDTHS
-    meta['BAND_WAVELENGTHS'] = BAND_WAVELENGTHS
-    meta['ZPT'] = DEFAULT_ZPT
-    
-    df = pd.read_csv(
-        fn, header=header,
-        on_bad_lines='skip',
-        sep='\s+'
-    )
 
-    df = df.drop(columns=['VARLIST:', 'FIELD', 'FLAG'])
-    joint_lc = df.copy()
-    
-    # filter into ZTF and YSE LCs
-    ztf_lc = df[(df.FLT == 'X') | (df.FLT == 'Y')]
-    yse_lc = df[~df.index.isin(ztf_lc.index)]
-    
-    if len(ztf_lc.index) == 0:
-        lcs = {'YSE': yse_lc,}
-    elif len(yse_lc.index) == 0:
-        lcs = {'ZTF': ztf_lc,}
-    else:
-        lcs = {'ZTF': ztf_lc, 'YSE': yse_lc, 'joint': joint_lc}
-        
-    sr_lcs = {}
-
-    # first calculate peak of joint light curve
-    joint_peak_time = df['MJD'][df['FLUXCAL'].idxmax()]
-
-    meta['PEAK_TIME'] = joint_peak_time
-    
-    for lc_survey in lcs:
-        meta_survey = meta.copy()
-        meta_survey['SURVEY'] = lc_survey
-        
-        lc = lcs[lc_survey]
-        lc = lc.dropna(axis=0, how='any')
-
-        t = lc.MJD.to_numpy()
-        f = lc.FLUXCAL.to_numpy()
-        ferr = lc.FLUXCALERR.to_numpy()
-        b = lc.FLT.to_numpy()
-
-        sr_lc = create_lc(
-            t, f, ferr, b, meta_survey
-        )
-        if sr_lc is not None:
-            sr_lcs[lc_survey] = sr_lc
-            
-    return sr_lcs
-
-
-def generate_raenn_file(test_dir, save_dir):
-    """Generate lcs.npz file for raenn training.
-    """
     lcs = []
-    for i, fn in enumerate(glob.glob(
-        os.path.join(test_dir, "*.dat")
-        )):
+
+    df = pd.read_csv(fn, skiprows=header, delim_whitespace=True, skipfooter=1)
+    df = df.drop(columns=['VARLIST:', 'FIELD', 'FLAG'])
+    t = Time(df['MJD'], format='mjd').datetime
+    df.set_index(pd.DatetimeIndex(t, name='time'), inplace=True)
+    df['flux'] = df['FLUXCAL']
+    df['flux_unc'] = df['FLUXCALERR']
+    df['zpt'] = DEFAULT_ZPT
+    df = df[['flux', 'flux_unc', 'zpt', 'FLT']]
+
+    # convert to astropy Timeseries
+    for b in np.unique(df['FLT']):
+        if b == 'X':
+            b_true = 'g'
+        elif b == 'Y':
+            b_true = 'r'
+        else:
+            b_true = b
+        df_b = df[df['FLT'] == b]
+        df_b = df_b.drop(columns=['FLT'])
+        ts = TimeSeries.from_pandas(df_b)
+        filt = Filter(
+            band=b_true,
+            instrument = 'ZTF' if b in ['X', 'Y'] else 'YSE',
+            center=BAND_WAVELENGTHS[b] * u.AA,
+            width=BAND_WIDTHS[b] * u.AA,
+        )
+        lc = LightCurve(
+            ts, filt=filt
+        )
+        lc.calibrate_fluxes(23.90)
+        # absolute magnitudes
+        abs_lc = lc.absolute(float(meta['REDSHIFT_FINAL']))
+        # correct for extinction
+        lcs.append(abs_lc)
+    return lcs, meta
+
+
+def generate_yse_transients(test_dir, save_dir):
+    """
+    Generate SNAPI Transient objects from YSE data.
+    If ZTF data is already present, merge the two.
+    """
+    for i, fn in enumerate(
+        glob.glob(
+            os.path.join(test_dir, "*.dat")
+        )
+    ):
         if i % 100 == 0:
             print(i)
-        lc_dict = import_single_yse_lc(fn)
-        for k in lc_dict:
-            lcs.append(lc_dict[k])
-    print(len(lcs))
+        lcs, meta = import_single_yse_lc(fn)
 
-    save_lcs(lcs, save_dir)
+        # check if file already exists (aka from ZTF)
+        prefix = os.path.basename(fn).split(".")[0]
+        if os.path.exists(os.path.join(save_dir, prefix+".hdf5")):
+            transient = Transient.load(os.path.join(save_dir, prefix+".hdf5"))
+            if transient.coordinates is not None: # import_ztf.py generated file
+                photometry = transient.photometry.filter_by_instrument("ZTF")
+                new_lcs = set()
+                for lc in lcs:
+                    new_lc = lc.correct_extinction(coordinates=transient.coordinates) # SO IT ALIGNS
+                    photometry.add_lightcurve(new_lc)
+                merged_transient = Transient(
+                    iid=prefix,
+                    ra=transient.coordinates.ra,
+                    dec=transient.coordinates.dec,
+                    redshift=transient.redshift,
+                    spec_class=transient.spec_class,
+                    internal_names=transient.internal_names,
+                    photometry=photometry
+                )
+                merged_transient.mwebv = float(meta['MWEBV'])
+                merged_transient.save(os.path.join(save_dir, prefix+".hdf5"))
+                continue
+
+        new_lcs = set()
+        for lc in lcs:
+            new_lcs.add(
+                lc.correct_extinction(mwebv=float(meta['MWEBV']))
+            )
+        transient = Transient(
+            iid=prefix,
+            redshift=meta['REDSHIFT_FINAL'],
+            spec_class=meta['SPEC_CLASS'], # TODO: broad or not? canonicalize?
+            photometry=Photometry(lcs),
+        )
+        transient.mwebv = float(meta['MWEBV'])
+        transient.save(os.path.join(save_dir, prefix+".hdf5"))
 
 
 if __name__ == "__main__":
-    test_dir = '../../../data/yse_dr1_zenodo_snr_geq_4/'
-    #test_dir = '../data/yse_dr1_zenodo_snr_geq_4/'
-
-    save_dir = '../../../data/superraenn/yse/'
-    #save_dir = '../data/superraenn/yse/'
-    generate_raenn_file(test_dir, save_dir)
+    TEST_DIR = '../../../data/yse_dr1_zenodo_snr_geq_4/'
+    SAVE_DIR = '../../../data/superraenn/yse/'
+    generate_yse_transients(TEST_DIR, SAVE_DIR)

@@ -1,7 +1,7 @@
 import numpy as np
 
 from survey_agnostic_sn_vae.preprocessing import calc_outseq
-from survey_agnostic_sn_vae.raenn import VAE
+from survey_agnostic_sn_vae.archival.raenn import VAE
 
 
 def test_two_band_tiling(test_twoband_lightcurve) -> None:

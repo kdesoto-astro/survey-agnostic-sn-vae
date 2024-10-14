@@ -2,7 +2,7 @@
 import torch
 import os
 from survey_agnostic_sn_vae.preprocessing import prep_input
-from survey_agnostic_sn_vae.raenn import SNDataset
+from survey_agnostic_sn_vae.archival.raenn import SNDataset
 
 def weighted_mse_vectorized(y_true, y_pred, mask):
     nfilts = 6

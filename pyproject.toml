@@ -18,10 +18,11 @@ dependencies = [
     "questionary",
     "prompt-toolkit",
     "ipykernel", # Support for Jupyter notebooks
+    "six",
     "numpy",
-    "mosfit",
     "astrocats",
-    "mpi4py"
+    "jax",
+    "jaxlib"
 ]
 
 [project.urls]

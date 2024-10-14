@@ -1,4 +1,4 @@
-from survey_agnostic_sn_vae.raenn import *
+from survey_agnostic_sn_vae.archival.raenn import *
 
 def test_contrastive_loss() -> None:
     """Test contrastive loss is working as expected.

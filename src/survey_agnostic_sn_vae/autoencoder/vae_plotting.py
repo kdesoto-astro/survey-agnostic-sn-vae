@@ -4,6 +4,9 @@ from snapi import LightCurve, Photometry, Formatter, Filter
 from astropy.time import Time
 import astropy.units as u
 import jax.numpy as jnp
+import jax.random as random
+import h5py
+
 
 from survey_agnostic_sn_vae.autoencoder.raenn_equinox import (
     evaluate, generate_decoder_input,
@@ -100,32 +103,54 @@ def plot_decodings(
 
         yield fig, ax
 
-def add_ellipse(ax, center, semimajor, semiminor, n_points=20, formatter=None):
+def add_ellipse(ax, center, semimajor, semiminor, n_points=20, formatter=None, no_edge=False):
     if formatter is None:
         formatter = Formatter()
     theta = np.linspace(0, 2*np.pi, n_points)
     x = center[0] + semimajor * np.cos(theta)
     y = center[1] + semiminor * np.sin(theta)
-    ax.fill(x, y, color=formatter.face_color, alpha=0.05)
-    ax.plot(x, y, color=formatter.face_color, alpha=0.1)
-    return ax
+    area = np.pi * semimajor * semiminor
+    (legend_obj,) = ax.fill(x, y, color=formatter.face_color, alpha=min(0.01 / area, 1))
+    if not no_edge:
+        ax.plot(x, y, color=formatter.face_color, alpha=min(0.02 / area, 1))
+    return ax, legend_obj
 
 def plot_latent_space_helper(
-        means, logvars, matches=None, samples=None
+        ax, means, logvars, matches=None, samples=None,
+        classes=None, formatter=None,
     ):
     """plot latent space given the means and log-variances."""
-    fig, ax = plt.subplots()
-    formatter = Formatter()
+
+    if formatter is None:
+        formatter = Formatter()
 
     radii = np.sqrt(np.exp(logvars))
-    m0 = means[:,0]
-    m1 = means[:,1]
-    r0 = radii[:,0]
-    r1 = radii[:,1]
-    
-    for i, _ in enumerate(m0):
-        center = (m0[i], m1[i])
-        ax = add_ellipse(ax, center, r0[i], r1[i], formatter=formatter)
+    center = means[:,0:2] # len (Nsamples, 2)
+    rad = radii[:,0:2]
+    key = random.key(42)
+
+    if classes is not None:
+        for c in np.unique(classes):
+            key, subkey= random.split(key)
+            repeat_factor = int(round(2*len(classes) / len(classes[classes == c])))
+            center_rep = jnp.repeat(center[classes == c], repeat_factor, axis=0)
+            rad_rep = jnp.repeat(rad[classes == c], repeat_factor, axis=0)
+            random_samples = random.normal(subkey, shape=center_rep.shape)
+            sampled_pts = center_rep + random_samples*rad_rep
+            ax.scatter(
+                sampled_pts[:0,0], sampled_pts[:0,1], s=formatter.marker_size,
+                marker=formatter.marker_style,
+                alpha=1,
+                color=formatter.edge_color,
+                label=c
+            )
+            ax.scatter(
+                sampled_pts[:,0], sampled_pts[:,1], s=formatter.marker_size,
+                marker=formatter.marker_style,
+                alpha=formatter.nondetect_alpha,
+                color=formatter.edge_color,
+            )
+            formatter.rotate_colors()
     
     formatter.rotate_colors()
     if matches is not None:
@@ -165,27 +190,105 @@ def plot_latent_space_helper(
     ax.set_xlim((-2, 2))
     ax.set_ylim((-2, 2))
     formatter.make_plot_pretty(ax)
-    return fig, ax
+    return ax
 
 def plot_latent_space(
     encoder_inputs,
     ids,
     model,
+    classes=None,
+    use_matches=True,
 ):
     """Plot latent space from encoder inputs and ids."""
     # convert ids to numerics
     _, ids = np.unique(ids, return_inverse=True)
     encoder_data, _, matches, _, _ = dataloader(encoder_inputs, ids, shuffle_key=None)
- 
-    #halfway_idx = len(encoder_data) // 2
-    #idxs = jnp.concatenate((jnp.arange(halfway_idx-100, halfway_idx), jnp.arange(len(encoder), halfway_idx+100)))
+
+    if not use_matches:
+        matches = None
+
     result_dict = evaluate(model, encoder_data)
     means = result_dict['mu']
     logvars = result_dict['logvar']
     samples = result_dict['z']
-    fig, ax = plot_latent_space_helper(means, logvars, samples=samples, matches=matches)
+    fig, ax = plt.subplots()
+    ax = plot_latent_space_helper(
+        ax, means, logvars, samples=samples,
+        matches=matches, classes=classes
+    )
     return fig, ax
 
+
+def plot_lc_all_wvs(
+    ax, 
+    encoder_input, model, wvs,
+    prep_fn,
+    formatter1=None,
+    formatter2=None,
+):
+    encoder_input = np.array([encoder_input,])
+    if formatter1 is None:
+        formatter1 = Formatter()
+    if formatter2 is None:
+        formatter2 = Formatter()
+
+    encoder_dense = np.repeat(encoder_input, 500, axis=1)
+    min_t = min(np.min(encoder_dense[0,:,0]) - 0.03, -0.1)
+    max_t = max(np.max(encoder_dense[0,encoder_dense[0,:,0] < 10.,0]) + 0.03, 0.4)
+    dense_times = np.linspace(min_t, max_t, num=encoder_dense.shape[1])
+    encoder_dense[0,:,0] = dense_times[np.newaxis, :]
+    decoder_dense = generate_decoder_input(encoder_dense)
+    
+    filler_width = 1300.
+    with h5py.File(prep_fn, 'r') as prep_data:
+        wavemin = prep_data['encoder_input'].attrs['wavemin']
+        wavemax = prep_data['encoder_input'].attrs['wavemax']
+        bandmin = prep_data['encoder_input'].attrs['bandmin']
+        bandmax = prep_data['encoder_input'].attrs['bandmax']
+
+    for wv in wvs:
+        # replace wv in decoder_dense
+        decoder_dense = decoder_dense.at[:,:,1].set( (wv - wavemin) / (wavemax - wavemin) )
+        decoder_dense = decoder_dense.at[:,:,2].set( filler_width / (wavemax - wavemin) )
+        result_dict = evaluate(model, encoder_input, decoder_input=decoder_dense)
+        y_pred = result_dict['pred_y']
+
+        ax.plot(
+            encoder_dense[0,:,0] * 100.,
+            -1*(y_pred[0, :, 0] * (bandmax - bandmin) + bandmin),
+            color=formatter1.edge_color
+        )
+        formatter1.rotate_colors()
+    
+    times = encoder_input[0,:,0] * 100.
+    mags = encoder_input[0,:,1:7]
+    mag_errs = encoder_input[0,:,7:13]
+    wv_cen = encoder_input[0,:,19:25] * (wavemax - wavemin) + wavemin
+    interpolated_mask = encoder_input[0,:,13:19].astype(bool)
+
+    rec_lcs = set()
+    for j in range(6):
+        recreation = LightCurve(
+            times=Time(times[~interpolated_mask[:,j] & (times < 1000.)], format='mjd'),
+            mags=-1*(mags[~interpolated_mask[:,j] & (times < 1000.),j] * (bandmax - bandmin) + bandmin),
+            mag_errs=mag_errs[~interpolated_mask[:,j] & (times < 1000.),j] * (bandmax - bandmin),
+            filt = Filter(
+                instrument=str(round(wv_cen[0,j])),
+                band="AA",
+                center=np.nan * u.AA
+            )
+        )
+        rec_lcs.add(recreation)
+
+    photometry = Photometry(rec_lcs)
+    photometry.plot(ax=ax, formatter=formatter2)
+    return ax
+
+    
+
+
+
+    
 
 
 

@@ -11,13 +11,15 @@ def canonicalize(spec_class):
         return "SN Ia"
     if spec_class in ["SN II", "SN IIL", "SN IIP"]:
         return "SN II"
-    if spec_class in ["SN Ib", "SN Ic", "SN Ic-BL", "SN Ib/c", "SN Ib-Ca-rich", "SN Ic-Ca-rich"]:
+    if spec_class in ["SN Ibc", "SN Ib", "SN Ic", "SN Ic-BL", "SN Ib/c", "SN Ib-Ca-rich", "SN Ic-Ca-rich"]:
         return "SN Ibc"
     if spec_class in ["SN IIn", "SLSN-II"]:
         return "SN IIn"
     if spec_class in ["SLSN-I"]:
         return "SLSN-I"
-    return spec_class
+    if spec_class == "NA":
+        return "NA"
+    return "Other"
 
 def generate_ztf_transients(
     save_dir,

@@ -1,4 +1,3 @@
-import functools as ft
 from typing import Optional
 
 import equinox as eqx
@@ -10,7 +9,13 @@ import optax
 import wandb
 
 from survey_agnostic_sn_vae.autoencoder.contrastive_loss import contrastive_loss
+
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update('jax_platform_name', 'cpu')
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+
 
 @jax.jit
 def sample_with_dynamic_indices(array, indices):
@@ -461,7 +466,7 @@ def fit_model(
 
     return model, log_losses, log_val_losses
 
-@eqx.filter_jit
+#@eqx.filter_jit
 def evaluate(
     model,
     encoder_input,
@@ -471,6 +476,7 @@ def evaluate(
     if decoder_input is None:
         decoder_input = generate_decoder_input(encoder_input)
     
+    print(decoder_input.shape, encoder_input.shape)
     inference_model = eqx.nn.inference_mode(model)
     pred_y, mu, logvar, z = jax.vmap(
         inference_model, in_axes=(0,0,0,None)

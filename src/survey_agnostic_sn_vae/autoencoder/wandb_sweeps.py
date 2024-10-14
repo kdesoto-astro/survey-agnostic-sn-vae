@@ -74,18 +74,19 @@ def wandb_sweep(
             config=config
         ):
             config = wandb.config
-            #if config is not None:
-            #    for k, val in config.items():
-            #        suffix += f'_{k}-{val}'
+            
             # load data
             with h5py.File(data_fn, 'r') as file:
                 encoder_inputs = file['encoder_input'][:]
                 ids = file['ids'][:]
+                classes = file['classes'][:]
                 num_samples = len(encoder_inputs)
                 train_encoder_inputs = encoder_inputs[:num_samples // 10 * 9]
                 val_encoder_inputs = encoder_inputs[num_samples // 10 * 9:]
                 train_ids = ids[:num_samples // 10 * 9]
                 val_ids = ids[num_samples // 10 * 9:]
+                train_classes = classes[:num_samples // 10 * 9]
+                val_classes = classes[num_samples // 10 * 9:]
 
             vae_config_keys = {
                 'hidden_dim', 'out_dim'
@@ -132,6 +133,7 @@ def wandb_sweep(
                 encoder_inputs[:256],
                 ids[:256],
                 model,
+                classes=train_classes[:256]
             )
             latent_path = os.path.join(save_dir, "latent_train"+sweep_name+suffix+".png")
             fig.savefig(latent_path)
@@ -141,6 +143,7 @@ def wandb_sweep(
                 val_encoder_inputs[:256],
                 val_ids[:256],
                 model,
+                classes=val_classes[:256],
             )
             latent_path = os.path.join(save_dir, "latent_val"+sweep_name+suffix+".png")
             fig.savefig(latent_path)

@@ -69,9 +69,12 @@ def prep_input(
         try:
             transient = Transient.load(transient_fn)
             photometry = transient.photometry
-            if filter_instrument is not None:
-                photometry.filter_by_instrument(filter_instrument)
             if len(photometry) < 2: # we do need at least 2 bands
+                dense_arrs[i, :, :] = np.nan
+                continue
+            if filter_instrument is not None:
+                photometry = photometry.filter_by_instrument(filter_instrument)
+            if len(photometry) == 0: # can be one band
                 dense_arrs[i, :, :] = np.nan
                 continue
             if len(photometry) > 6: # randomly select 6
@@ -106,11 +109,11 @@ def prep_input(
     dense_arrs[:, :, 1:nfiltsp1] = -1.0 * dense_arrs[:, :, 1:nfiltsp1]
 
     if load and (prep_file is not None):
-        prep_data = np.load(prep_file)
-        bandmin = prep_data['bandmin']
-        bandmax = prep_data['bandmax']
-        wavemin = prep_data['wavemin']
-        wavemax = prep_data['wavemax']
+        with h5py.File(prep_file, 'r') as prep_data:
+            bandmin = prep_data['encoder_input'].attrs['bandmin']
+            bandmax = prep_data['encoder_input'].attrs['bandmax']
+            wavemin = prep_data['encoder_input'].attrs['wavemin']
+            wavemax = prep_data['encoder_input'].attrs['wavemax']
     else:
         timesteps_consider = dense_arrs[:, :, 0] < 1000.
         bandmin, bandmax = np.nanpercentile(dense_arrs[timesteps_consider, 1:nfiltsp1], q=[2., 98.])

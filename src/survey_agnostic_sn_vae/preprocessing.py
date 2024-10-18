@@ -67,7 +67,7 @@ def prep_input(
         if i % 50 == 0:
             print(f"Pre-processed {i} out of {num} transients...")
         try:
-            transient = Transient.load(transient_fn)
+            transient = Transient.load(transient_fn, archival=True)
             photometry = transient.photometry
             if len(photometry) < 2: # we do need at least 2 bands
                 dense_arrs[i, :, :] = np.nan

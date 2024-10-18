@@ -58,7 +58,7 @@ def contrastive_loss(
         kl = jnp.log(stddev2/stddev1) + (stddev1**2 + (Mu_i - Mu_j).pow(2)) / (2*stddev2**2) - 0.5
         dists = jnp.median(kl, axis=-1)
         
-    elif distance == 'mahalonobis':
+    elif distance == 'mahalanobis':
         dists = jnp.linalg.norm((S_i - Mu_j) / (stddev2 + eps), axis=-1)
         
     elif distance == 'wasserstein':

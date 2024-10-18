@@ -1,8 +1,10 @@
-from typing import Optional
+from typing import Optional, Callable, Tuple
+from functools import partial
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.nn as jnn
 import jax.tree_util as jtu
 import numpy as np
 import optax
@@ -12,7 +14,6 @@ from survey_agnostic_sn_vae.autoencoder.contrastive_loss import contrastive_loss
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update('jax_platform_name', 'cpu')
-jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
@@ -35,6 +36,30 @@ class TimeDistributedDense(eqx.Module):
         # Assuming x has shape (batch_size, time_steps, features_in)
         return jax.vmap(self.dense, in_axes=0, out_axes=0)(x)  # Apply across the time axis
 
+
+@jax.jit
+def gru_scan_no_cache_miss(carry, scan_in):
+    (
+        weight_ih,
+        weight_hh,
+        bias,
+        bias_n,
+        hidden
+    ) = carry
+    igate_0, igate_1, igate_2 = jnp.split(weight_ih @ scan_in + bias, 3)
+    hgate_0, hgate_1, hgate_2 = jnp.split(weight_hh @ hidden, 3)
+    reset = jnn.sigmoid(igate_0 + hgate_0)
+    inp = jnn.sigmoid(igate_1 + hgate_1)
+    new = jnn.tanh(igate_2 + reset * (hgate_2 + bias_n))
+
+    return (
+        weight_ih,
+        weight_hh,
+        bias,
+        bias_n,
+        new + inp * (hidden - new),
+     ), None
+
 class SymmetricEncoder(eqx.Module):
     """The SymmetricEncoder Equinox module.
     Uses GRUs to convert input time series to latent
@@ -46,6 +71,7 @@ class SymmetricEncoder(eqx.Module):
     layers_after_gru: list
     gru: eqx.Module
     prelu: eqx.nn.PReLU
+    init_state: jnp.ndarray
 
     def __init__(
             self,
@@ -65,6 +91,7 @@ class SymmetricEncoder(eqx.Module):
         self.prelu = eqx.nn.PReLU()
         self.gru = eqx.nn.GRUCell(hidden_dim, hidden_dim, key=key4)
         self.layers_after_gru = [eqx.nn.PReLU(),]
+        self.init_state = jnp.zeros(self.gru.hidden_size)
 
     def __call__(self, x):
         x = jnp.delete(x, jnp.arange(13, 19), axis=-1, assume_unique_indices=True) # we don't want the mask to be passed through encoder
@@ -87,12 +114,18 @@ class SymmetricEncoder(eqx.Module):
 
         combined_layer = sublayer1 + sublayer2 + sublayer3 + sublayer4 + sublayer5 + sublayer6
         x = self.prelu(combined_layer)
-
-        def scan_fn(carry, inp):
-            return self.gru(inp, carry), None
-        
-        init_state = jnp.zeros(self.gru.hidden_size)
-        x, _ = jax.lax.scan(scan_fn, init_state, x)
+        carry = (
+            self.gru.weight_ih,
+            self.gru.weight_hh,
+            self.gru.bias,
+            self.gru.bias_n,
+            self.init_state
+        )
+        #carry = (None,None,None,None,self.init_state)
+        # Inspect the jaxpr of the function
+        out, _ = jax.lax.scan(gru_scan_no_cache_miss, carry, x)
+        x = out[-1]
+        #(x,_), _ = jax.lax.scan(gru_scan, (self.init_state, self.gru), x)
         for layer in self.layers_after_gru:
             x = layer(x)
         return x
@@ -164,14 +197,12 @@ class VAE(eqx.Module):
         x = jnp.reshape(x, (-1, 6)) # TODO: un-hardcode
         return x, mu, logvar, z
     
-@eqx.filter_jit
+@partial(jax.jit, static_argnums=(5,6,7,8))
 @eqx.filter_value_and_grad(has_aux=True)
 def compute_loss(
     model, epoch, encoder_input, decoder_input, matches,
-    include_reconstructive: bool=True,
-    include_kl: bool=True,
-    contrastive_distance: Optional[str]=None,
-    contrastive_temp: Optional[float]=None,
+    include_reconstructive,include_kl,
+    contrastive_distance,contrastive_temp,
 ):
     """Calculate the overall loss of model on x, given
     true recreations y. Matches indicate arrays from
@@ -181,7 +212,7 @@ def compute_loss(
         jnp.arange(len(encoder_input)),
         epoch
     )
-    loss = 0
+    loss = 0.0
     kl = jnp.nan
     cl = jnp.nan
     rl = jnp.nan
@@ -200,15 +231,14 @@ def compute_loss(
         loss += cl
     return loss, (rl, kl, cl)
 
-@eqx.filter_jit
+@partial(jax.jit, static_argnums=(6,7,8,9))
 @eqx.filter_value_and_grad(has_aux=True)
 def compute_loss_frozen(
     diff_model, static_model,
     epoch, encoder_input, decoder_input, matches,
-    include_reconstructive: bool=True,
-    include_kl: bool=True,
-    contrastive_distance: Optional[str]=None,
-    contrastive_temp: Optional[float]=None,
+    include_reconstructive,include_kl,
+    contrastive_distance,
+    contrastive_temp
 ):
     """Compute loss for partially frozen model."""
     model = eqx.combine(diff_model, static_model)
@@ -236,7 +266,7 @@ def compute_loss_frozen(
         loss += cl
     return loss, (rl, kl, cl)
 
-@eqx.filter_jit
+@jax.jit
 def reconstruction_loss(y, pred_y):
     """
     Calculate the reconstruction loss of the model.
@@ -246,7 +276,7 @@ def reconstruction_loss(y, pred_y):
     #num_clipped = jnp.clip(numerator, min=0.0, max=10.) + 0.1*numerator
     return jax.numpy.sum(numerator) / jax.numpy.sum(1 - y[:,:,13:19])
 
-@eqx.filter_jit
+@jax.jit
 def kl_loss(mu, logvar):
     """
     Calculate the reconstruction loss of the model.
@@ -269,8 +299,19 @@ def generate_decoder_input(sequence):
 
     return outseq_tiled
 
-@eqx.filter_jit
-def dataloader(encoder_data, ids, shuffle_key:Optional[jax.random.key]=None):
+@jax.jit
+def update_slices(carry, start_index):
+    updated_data1, updated_data2, encoder_data, shuffled_idx1, shuffled_idx2 = carry
+    new_slice_data1 = sample_with_dynamic_indices(encoder_data, start_index+shuffled_idx1)
+    new_slice_data2 = sample_with_dynamic_indices(encoder_data, start_index+shuffled_idx2)
+
+    updated_data1 = jax.lax.dynamic_update_slice(updated_data1, new_slice_data1, (0, 0, start_index))
+    updated_data2 = jax.lax.dynamic_update_slice(updated_data2, new_slice_data2, (0, 0, start_index))
+
+    return (updated_data1, updated_data2, encoder_data, shuffled_idx1, shuffled_idx2), None
+
+@jax.jit
+def dataloader(encoder_data, ids, shuffle_key):
     """Shuffle and load encoder and decoder arrays.
     Within this function we generate (1) pairs of samples with subsets
     of LCs from the same events to enforce our contrastive loss, 
@@ -290,23 +331,12 @@ def dataloader(encoder_data, ids, shuffle_key:Optional[jax.random.key]=None):
         shuffled_idx1 = shuffled_vals[jnp.repeat(shuffled_vals[:3], 2)]
         shuffled_idx2 = shuffled_vals[jnp.repeat(shuffled_vals[3:], 2)]
 
-    @jax.jit
-    def update_slices(carry, start_index):
-        updated_data1, updated_data2 = carry
-        new_slice_data1 = sample_with_dynamic_indices(encoder_data, start_index+shuffled_idx1)
-        new_slice_data2 = sample_with_dynamic_indices(encoder_data, start_index+shuffled_idx2)
-
-        updated_data1 = jax.lax.dynamic_update_slice(updated_data1, new_slice_data1, (0, 0, start_index))
-        updated_data2 = jax.lax.dynamic_update_slice(updated_data2, new_slice_data2, (0, 0, start_index))
-
-        return (updated_data1, updated_data2), None
-
     batch_split1 = jnp.array(encoder_data)
     batch_split2 = jnp.array(encoder_data)
 
-    carry = (batch_split1, batch_split2,)
+    carry = (batch_split1, batch_split2, encoder_data, shuffled_idx1, shuffled_idx2)
     carry, _ = jax.lax.scan(update_slices, carry, 6 * jnp.arange(5) + 1 )
-    (batch_split1, batch_split2) = carry
+    (batch_split1, batch_split2, _, _, _) = carry
     encoder_pairs = jnp.vstack((batch_split1, batch_split2))
     decoder_data = generate_decoder_input(encoder_pairs)
     match_data = jnp.tile(ids, 2)
@@ -318,6 +348,103 @@ def dataloader(encoder_data, ids, shuffle_key:Optional[jax.random.key]=None):
     even_idxs = jnp.arange(1,dataset_size, 2)
     perm_doubled = perm_doubled.at[even_idxs].set(perm_doubled[even_idxs-1] + dataset_size) # makes sure pairs are summoned together
     return encoder_pairs, decoder_data, match_data, perm_doubled, new_key
+
+
+@partial(jax.jit, static_argnums=2)
+def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
+    (
+        model_params,
+        opt_state,
+        encoder_data,
+        decoder_data,
+        matches,
+        epoch
+    ) = carry
+
+    (
+        static_model,
+        filter_spec,
+        transfer_learning,
+        include_reconstructive,
+        include_kl,
+        distance,
+        temp,
+        optim
+    ) = statics_hashable
+
+    (
+        val_encoder_data,
+        val_decoder_data,
+        val_matches,
+    ) = statics_nonhashable
+
+    #flat_model, flat_opt_state = A
+    #model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
+    #opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, flat_opt_state)
+
+    encoder_batch = encoder_data[perm_idxs]
+    decoder_batch = decoder_data[perm_idxs]
+    matches_batch = matches[perm_idxs]
+    model = eqx.combine(model_params, static_model)
+
+    """
+    if transfer_learning:
+        (loss, (rl, kl, cl)), grads = compute_loss_frozen(
+            diff_model, static_model,
+            epoch, encoder_batch, decoder_batch, matches_batch,
+            include_reconstructive,include_kl,distance,temp
+        )
+    """
+        
+    (loss, (rl, kl, cl)), grads = compute_loss(
+        model, epoch, encoder_batch, decoder_batch, matches_batch,
+        include_reconstructive,include_kl,distance,temp
+    )
+    (val_loss, (val_rl, val_kl, val_cl)), _ = compute_loss(
+        model, epoch, val_encoder_data, val_decoder_data, val_matches,
+        include_reconstructive,include_kl,distance,temp
+    )
+    updates, update_opt_state = optim.update(grads, opt_state)
+    update_model = eqx.apply_updates(model, updates)
+    update_model_params, _ = eqx.partition(update_model, eqx.is_array)
+    #flat_update_model = jax.tree_util.tree_leaves(update_model)
+    #flat_update_opt_state = jax.tree_util.tree_leaves(update_opt_state)
+
+    #return (flat_update_model, flat_update_opt_state), jnp.array([loss, rl, kl, cl, val_loss, val_rl, val_kl, val_cl])
+    new_carry = (
+        update_model_params,
+        update_opt_state,
+        encoder_data,
+        decoder_data,
+        matches,
+        epoch
+    )
+    return new_carry, jnp.array([loss, rl, kl, cl, val_loss, val_rl, val_kl, val_cl])
+
+@partial(jax.jit, static_argnums=2)
+def epoch_iterator(carry, epoch, statics_hashable, statics_nonhashable):
+
+    # carry: (model, opt_state, key)
+
+    encoder_inputs, ids = statics_nonhashable[:2]
+    batch_size = statics_hashable[0]
+
+    encoder_data, decoder_data, matches, perm, new_key = dataloader(encoder_inputs, ids, carry[-1])
+    
+    perm_new_len = (len(encoder_data) // batch_size) * batch_size
+    perm_reshaped = jnp.reshape(perm[:perm_new_len], shape=(-1,batch_size))
+
+    carry_init = (
+        *carry[:-1],
+        encoder_data, # generated in loop
+        decoder_data,
+        matches,
+        epoch,
+    )
+    # statics[-1] is make_step_partials
+    carry_final, losses = jax.lax.scan(statics_hashable[-1], carry_init, perm_reshaped)
+    A = (*carry_final[:-4], new_key)
+    return A, jnp.mean(losses, axis=0)
 
 def fit_model(
         model, encoder_inputs,
@@ -360,123 +487,97 @@ def fit_model(
     _, ids = np.unique(ids, return_inverse=True)
     _, val_ids = np.unique(val_ids, return_inverse=True)
 
-    val_encoder_data, val_decoder_data, val_matches, _, _ = dataloader(val_encoder_inputs, val_ids, shuffle_key=None)
+    val_encoder_data, val_decoder_data, val_matches, _, _ = dataloader(val_encoder_inputs, val_ids, None)
 
-    if contrastive_params is not None:
+    if contrastive_params != 'None':
         assert "_" in contrastive_params
         temp = float(contrastive_params.split("_")[1])
         distance = contrastive_params.split("_")[0]
     else:
         distance, temp = None, None
     
-    #@eqx.filter_jit
-    def epoch_iterator(A, epoch):
-        encoder_data, decoder_data, matches, perm, new_key = dataloader(encoder_inputs, ids, shuffle_key=A[-1])
-
-        @eqx.filter_jit
-        def make_step(A, perm_idxs):
-            model, opt_state = A
-            #flat_model, flat_opt_state = A
-            #model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
-            #opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, flat_opt_state)
-
-            encoder_batch = encoder_data[perm_idxs]
-            decoder_batch = decoder_data[perm_idxs]
-            matches_batch = matches[perm_idxs]
-
-            if transfer_learning:
-                diff_model, static_model = eqx.partition(model, filter_spec)
-                (loss, (rl, kl, cl)), grads = compute_loss_frozen(
-                    diff_model, static_model,
-                    epoch, encoder_batch, decoder_batch, matches_batch,
-                    include_reconstructive=include_reconstructive,
-                    include_kl=include_kl, contrastive_distance=distance,
-                    contrastive_temp=temp
-                )
-                
-            else:
-                (loss, (rl, kl, cl)), grads = compute_loss(
-                    model, epoch, encoder_batch, decoder_batch, matches_batch,
-                    include_reconstructive=include_reconstructive,
-                    include_kl=include_kl, contrastive_distance=distance,
-                    contrastive_temp=temp,
-                )
-            (val_loss, (val_rl, val_kl, val_cl)), _ = compute_loss(
-                model, epoch, val_encoder_data, val_decoder_data, val_matches,
-                include_reconstructive=include_reconstructive,
-                include_kl=include_kl, contrastive_distance=distance,
-                contrastive_temp=temp,
-            )
-            updates, update_opt_state = optim.update(grads, opt_state)
-            update_model = eqx.apply_updates(model, updates)
-            #flat_update_model = jax.tree_util.tree_leaves(update_model)
-            #flat_update_opt_state = jax.tree_util.tree_leaves(update_opt_state)
-
-            #return (flat_update_model, flat_update_opt_state), jnp.array([loss, rl, kl, cl, val_loss, val_rl, val_kl, val_cl])
-            return (update_model, update_opt_state), jnp.array([loss, rl, kl, cl, val_loss, val_rl, val_kl, val_cl])
-        
-        perm_new_len = (len(encoder_data) // batch_size) * batch_size
-        perm_reshaped = jnp.reshape(perm[:perm_new_len], shape=(-1,batch_size))
-        
-        if transfer_learning:
-            aggregate = []
-            for p in perm_reshaped:
-                (A1, A2), out = make_step(A[:2], p)
-                aggregate.append(out)
-                A = (A1, A2, new_key)
-            aggregate = jnp.array(aggregate)
-        else:
-            (A1, A2), aggregate = jax.lax.scan(make_step, A[:2], perm_reshaped)
-            A = (A1, A2, new_key)
-        return A, jnp.mean(aggregate, axis=0)
-    
     log_losses = []
     log_val_losses = []
+
+    model_params, static_model = eqx.partition(model, eqx.is_array)
+
+    statics_hashable = (
+        batch_size,
+        static_model,
+        filter_spec,
+        transfer_learning,
+        include_reconstructive,
+        include_kl,
+        distance,
+        temp,
+        optim
+    )
+    statics_nonhashable = (
+        encoder_inputs,
+        ids,
+        val_encoder_data,
+        val_decoder_data,
+        val_matches,
+    )
+
+    make_step_partial = partial(
+        make_step,
+        statics_hashable=statics_hashable[1:],
+        statics_nonhashable=statics_nonhashable[2:]
+    )
+
+    A = (
+        model_params,
+        opt_state,
+        key,
+    )
+
+    # Use partial to fix statics
+    epoch_iterator_partial = partial(
+        epoch_iterator, statics_hashable=(*statics_hashable, make_step_partial),
+        statics_nonhashable=statics_nonhashable
+    )
+
     for e in range(num_epochs):
         #(flat_model, flat_opt_state, key), (l, rl, kl, cl, vl, vrl, vkl, vcl) = epoch_iterator((flat_model, flat_opt_state, key), e)
-        (model, opt_state, key), (l, rl, kl, cl, vl, vrl, vkl, vcl) = epoch_iterator((model, opt_state, key), e)
-        loss = jnp.log10(l).item()
-        val_loss = jnp.log10(vl).item()
-        rl_loss = jnp.log10(rl).item()
-        kl_loss_term = jnp.log10(kl).item()
-        cl_loss = jnp.log10(cl).item()
-        rl_val_loss = jnp.log10(vrl).item()
-        kl_val_loss = jnp.log10(vkl).item()
-        cl_val_loss = jnp.log10(vcl).item()
+        print(e)
+        A, out = epoch_iterator_partial(A, e)
+
+        loss, rl, kl, cl, vl, vrl, vkl, vcl = jnp.log10(out).block_until_ready()
 
         if wandb_log:
             wandb.log({
                 "log_loss": loss,
-                "val_log_loss": val_loss,
-                "reconstruction_log_loss": rl_loss,
-                "kl_log_loss": kl_loss_term,
-                "contrastive_log_loss": cl_loss,
-                "val_reconstruction_log_loss": rl_val_loss,
-                "val_kl_log_loss": kl_val_loss,
-                "val_contrastive_log_loss": cl_val_loss,
+                "val_log_loss": vl,
+                "reconstruction_log_loss": rl,
+                "kl_log_loss": kl,
+                "contrastive_log_loss": cl,
+                "val_reconstruction_log_loss": vrl,
+                "val_kl_log_loss": vkl,
+                "val_contrastive_log_loss": vcl,
             })
         
         else:
-            print(f"Epoch {e}: Training Log Loss={round(loss, 3)}, Validation Log Loss={round(val_loss, 3)}")
+            print(f"Epoch {e}: Training Log Loss={round(loss, 3)}, Validation Log Loss={round(vl, 3)}")
 
         log_losses.append(loss)
-        log_val_losses.append(val_loss)
+        log_val_losses.append(vl)
 
     #model = jax.tree_util.tree_unflatten(treedef_model, flat_model)
-
+    print('finished')
+    model = eqx.combine(model_params, static_model)
     return model, log_losses, log_val_losses
 
-#@eqx.filter_jit
+@jax.jit
 def evaluate(
     model,
     encoder_input,
-    decoder_input=None,
+    decoder_input,
 ):
     """Evaluate the model on a dataset."""
     if decoder_input is None:
         decoder_input = generate_decoder_input(encoder_input)
     
-    print(decoder_input.shape, encoder_input.shape)
     inference_model = eqx.nn.inference_mode(model)
     pred_y, mu, logvar, z = jax.vmap(
         inference_model, in_axes=(0,0,0,None)

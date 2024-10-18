@@ -1,0 +1,18 @@
+hidden_dim:
+  value: 32
+out_dim:
+  value: 3
+learning_rate:
+  value: 0.001
+batch_size:
+  value: 32
+num_epochs:
+  value: 20
+include_kl:
+  value: True
+include_reconstructive:
+  value: True
+contrastive_params: 
+  value: 'None' #'mahalanobis_1.0'
+transfer_learning:
+  value: False

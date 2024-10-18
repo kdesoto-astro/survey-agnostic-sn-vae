@@ -7,6 +7,7 @@ data/
 #notebooks
 docs/notebooks/*.ipynb
 src/survey_agnostic_sn_vae/data_generation/*.ipynb
+benchmarks/tensorboard
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

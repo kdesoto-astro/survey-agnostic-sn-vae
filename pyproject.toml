@@ -22,7 +22,13 @@ dependencies = [
     "numpy",
     "astrocats",
     "jax",
-    "jaxlib"
+    "jaxlib",
+    "equinox",
+    "optax",
+    "wandb",
+    "lightgbm",
+    "networkx",
+    "torch"
 ]
 
 [project.urls]

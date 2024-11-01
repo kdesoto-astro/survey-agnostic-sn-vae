@@ -39,6 +39,8 @@ class TimeDistributedDense(eqx.Module):
 
 @jax.jit
 def gru_scan_no_cache_miss(carry, scan_in):
+    """Avoids the cache misses that I was seeing
+    from the built-in equinox GRU.call function."""
     (
         weight_ih,
         weight_hh,
@@ -94,25 +96,14 @@ class SymmetricEncoder(eqx.Module):
         self.init_state = jnp.zeros(self.gru.hidden_size)
 
     def __call__(self, x):
-        x = jnp.delete(x, jnp.arange(13, 19), axis=-1, assume_unique_indices=True) # we don't want the mask to be passed through encoder
-
         # make symmetric via shared sublayer
-        sublayer1 = x[:,[0,1,7,13,19]]
-        sublayer2 = x[:,[0,2,8,14,20]]
-        sublayer3 = x[:,[0,3,9,15,21]]
-        sublayer4 = x[:,[0,4,10,16,22]]
-        sublayer5 = x[:,[0,5,11,17,23]]
-        sublayer6 = x[:,[0,6,12,18,24]]
+        num_sublayers = (len(x) - 1) // 5
+        sublayers = jnp.split(x, num_sublayers)
 
         for layer in self.vmapped_layers:
-            sublayer1 = layer(sublayer1)
-            sublayer2 = layer(sublayer2)
-            sublayer3 = layer(sublayer3)
-            sublayer4 = layer(sublayer4)
-            sublayer5 = layer(sublayer5)
-            sublayer6 = layer(sublayer6)
+            sublayers = jax.lax.vmap(layer, sublayers)
 
-        combined_layer = sublayer1 + sublayer2 + sublayer3 + sublayer4 + sublayer5 + sublayer6
+        combined_layer = jnp.mean(sublayers, axis=0)
         x = self.prelu(combined_layer)
         carry = (
             self.gru.weight_ih,
@@ -121,11 +112,8 @@ class SymmetricEncoder(eqx.Module):
             self.gru.bias_n,
             self.init_state
         )
-        #carry = (None,None,None,None,self.init_state)
-        # Inspect the jaxpr of the function
         out, _ = jax.lax.scan(gru_scan_no_cache_miss, carry, x)
         x = out[-1]
-        #(x,_), _ = jax.lax.scan(gru_scan, (self.init_state, self.gru), x)
         for layer in self.layers_after_gru:
             x = layer(x)
         return x

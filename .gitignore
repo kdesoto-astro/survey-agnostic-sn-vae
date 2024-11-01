@@ -3,6 +3,7 @@ docs/notebooks/products/
 docs/notebooks/transients/
 docs/notebooks/superraenn/
 data/
+benchmarks/preprocessed_augmented.h5
 
 #notebooks
 docs/notebooks/*.ipynb

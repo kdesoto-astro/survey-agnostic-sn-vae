@@ -15,6 +15,7 @@ jax.config.update("jax_explain_cache_misses", True)
 
 os.environ['XLA_FLAGS'] = '--xla_cpu_enable_xprof_traceme'
 
+        
 def perfetto_autoencoder(
         data_fn, config_fn,
     ):
@@ -23,14 +24,21 @@ def perfetto_autoencoder(
     ssh -L 9001:127.0.0.1:9001 <user>@<host>
     """
     config = import_config_yaml(config_fn)
-    with h5py.File(data_fn, 'r') as file:
-        encoder_inputs = file['encoder_input'][:]
-        ids = file['ids'][:]
-        num_samples = len(encoder_inputs)
-        train_encoder_inputs = encoder_inputs[:num_samples // 10 * 9]
-        val_encoder_inputs = encoder_inputs[num_samples // 10 * 9:]
-        train_ids = ids[:num_samples // 10 * 9]
-        val_ids = ids[num_samples // 10 * 9:]
+    
+    dense_arrs = []
+    ids = []
+    with h5py.File(data_fn, 'r') as f:
+        def iterate_datasets(name):
+            if isinstance(f[name], h5py.Dataset):
+                ids.append(name)
+                dense_arrs.append(f[name][:])
+        f.visit(iterate_datasets)
+        
+    num_samples = len(dense_arrs)
+    train_encoder_inputs = dense_arrs[:num_samples // 10 * 9]
+    val_encoder_inputs = dense_arrs[num_samples // 10 * 9:]
+    train_ids = ids[:num_samples // 10 * 9]
+    val_ids = ids[num_samples // 10 * 9:]
 
     vae_config_keys = {
         'hidden_dim', 'out_dim'

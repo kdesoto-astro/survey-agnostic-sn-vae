@@ -58,9 +58,9 @@ def perfetto_autoencoder(
     #jax.profiler.start_trace("tensorboard")
     fit_model(
         model=model,
-        encoder_inputs=train_encoder_inputs[:128],
+        encoder_inputs_ragged=train_encoder_inputs[:128],
         ids=train_ids[:128],
-        val_encoder_inputs=val_encoder_inputs[:128],
+        val_encoder_inputs_ragged=val_encoder_inputs[:128],
         val_ids=val_ids[:128],
         **fit_config,
         wandb_log=False,

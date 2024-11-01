@@ -60,7 +60,7 @@ def gru_scan_no_cache_miss(carry, scan_in):
         bias,
         bias_n,
         new + inp * (hidden - new),
-     ), None
+     ), new + inp * (hidden - new)
 
 class SymmetricEncoder(eqx.Module):
     """The SymmetricEncoder Equinox module.
@@ -77,7 +77,6 @@ class SymmetricEncoder(eqx.Module):
 
     def __init__(
             self,
-            #input_dim: int,
             hidden_dim: int,
             key=jax.random.key(42),
         ):
@@ -95,15 +94,12 @@ class SymmetricEncoder(eqx.Module):
         self.layers_after_gru = [eqx.nn.PReLU(),]
         self.init_state = jnp.zeros(self.gru.hidden_size)
 
-    def __call__(self, x):
-        # make symmetric via shared sublayer
-        num_sublayers = (len(x) - 1) // 5
-        sublayers = jnp.split(x, num_sublayers)
-
+    def __call__(self, x, filt_mask, t_end_idx):
+                
         for layer in self.vmapped_layers:
-            sublayers = jax.lax.vmap(layer, sublayers)
+            x = jax.vmap(layer)(x)
 
-        combined_layer = jnp.mean(sublayers, axis=0)
+        combined_layer = jnp.mean(x*filt_mask[:,jnp.newaxis,jnp.newaxis], axis=0)
         x = self.prelu(combined_layer)
         carry = (
             self.gru.weight_ih,
@@ -112,8 +108,8 @@ class SymmetricEncoder(eqx.Module):
             self.gru.bias_n,
             self.init_state
         )
-        out, _ = jax.lax.scan(gru_scan_no_cache_miss, carry, x)
-        x = out[-1]
+        out, hiddens = jax.lax.scan(gru_scan_no_cache_miss, carry, x)
+        x = hiddens[t_end_idx]
         for layer in self.layers_after_gru:
             x = layer(x)
         return x
@@ -145,7 +141,16 @@ class Decoder(eqx.Module):
         for layer in self.layers:
             x = layer(x)
         return x
-    
+
+@jax.jit
+def sample_with_dynamic_indices(array, indices):
+    """For some reason works around concrete index error."""
+    return array[:,:,indices]
+
+@jax.jit
+def generate_decoder_input(seq):
+    return jnp.reshape(seq[:,:,[0,4,5]], (seq.shape[0]*seq.shape[1], 3))
+
 class VAE(eqx.Module):
     """Full VAE, including encoder, decoder + sampler."""
     encoder: eqx.Module
@@ -153,6 +158,7 @@ class VAE(eqx.Module):
     latent_mean: eqx.nn.Linear
     latent_logvar: eqx.nn.Linear
     sample_noise: jax.Array
+    lc_nums: jax.Array
 
     def __init__(
             self,
@@ -160,7 +166,7 @@ class VAE(eqx.Module):
             out_dim: int,
             key=jax.random.key(42),
         ):
-        key1, key2, key3, key4, key5 = jax.random.split(key, num=5)
+        key1, key2, key3, key4, key5, key6 = jax.random.split(key, num=6)
         self.encoder = SymmetricEncoder(hidden_dim, key1)
         self.decoder = Decoder(
             out_dim+3, hidden_dim, key2
@@ -168,27 +174,29 @@ class VAE(eqx.Module):
 
         self.latent_mean = eqx.nn.Linear(hidden_dim, out_dim, key=key3)
         self.latent_logvar = eqx.nn.Linear(hidden_dim, out_dim, key=key4)
-        self.sample_noise = jax.random.normal(key=key5, shape=(10_000, 1_000, out_dim)) 
+        self.sample_noise = jax.random.normal(key=key5, shape=(10_000, 1_000, out_dim))
+        self.lc_nums = jax.random.bernoulli(key=key6, shape=(10_000, 1_000, 21))
 
-        #self.reparam_key = key5
+    def __call__(self, encoder_input, encoder_mask, vmapped_idx, epoch_count):
 
-    def __call__(self, encoder_input, decoder_input, vmapped_idx, epoch_count):
-        x = self.encoder(encoder_input)
+        filt_mask = self.lc_nums[epoch_count, vmapped_idx] * encoder_mask[:-1]
+        x = self.encoder(encoder_input[:,:,[0,1,2,4,5]], filt_mask, encoder_mask[-1])
+        
+        sub_dec = generate_decoder_input(encoder_input)
         mu = self.latent_mean(x)
         logvar = self.latent_logvar(x)
         z = mu + self.sample_noise[epoch_count, vmapped_idx] * jnp.exp(logvar / 2.)
-        # repeat num_times * 6
         x = z[jnp.newaxis, :]
-        x = jnp.repeat(x, decoder_input.shape[0], axis=0)
-        x = jnp.concatenate((x, decoder_input), axis=1)
+        x = jnp.repeat(x, sub_dec.shape[0], axis=0)
+        x = jnp.concatenate((x, sub_dec), axis=1)
         x = self.decoder(x)
-        x = jnp.reshape(x, (-1, 6)) # TODO: un-hardcode
+        x = jnp.reshape(x, (-1, encoder_input.shape[1]))
         return x, mu, logvar, z
     
 @partial(jax.jit, static_argnums=(5,6,7,8))
 @eqx.filter_value_and_grad(has_aux=True)
 def compute_loss(
-    model, epoch, encoder_input, decoder_input, matches,
+    model, epoch, encoder_input, encoder_mask, matches,
     include_reconstructive,include_kl,
     contrastive_distance,contrastive_temp,
 ):
@@ -196,9 +204,7 @@ def compute_loss(
     true recreations y. Matches indicate arrays from
     same event."""
     pred_y, mu, logvar, z = jax.vmap(model, in_axes=(0,0,0,None))(
-        encoder_input, decoder_input,
-        jnp.arange(len(encoder_input)),
-        epoch
+        encoder_input, encoder_mask, jnp.arange(len(encoder_input)), epoch
     )
     loss = 0.0
     kl = jnp.nan
@@ -223,7 +229,7 @@ def compute_loss(
 @eqx.filter_value_and_grad(has_aux=True)
 def compute_loss_frozen(
     diff_model, static_model,
-    epoch, encoder_input, decoder_input, matches,
+    epoch, encoder_input, encoder_mask, matches,
     include_reconstructive,include_kl,
     contrastive_distance,
     contrastive_temp
@@ -231,9 +237,7 @@ def compute_loss_frozen(
     """Compute loss for partially frozen model."""
     model = eqx.combine(diff_model, static_model)
     pred_y, mu, logvar, z = jax.vmap(model, in_axes=(0,0,0,None))(
-        encoder_input, decoder_input,
-        jnp.arange(len(encoder_input)),
-        epoch
+        encoder_input, encoder_mask, jnp.arange(len(encoder_input)), epoch
     )
     loss = 0
     kl = jnp.nan
@@ -259,10 +263,10 @@ def reconstruction_loss(y, pred_y):
     """
     Calculate the reconstruction loss of the model.
     """
-    numerator = (y[:,:,1:7] - pred_y) ** 2 * (1 - y[:,:,13:19]) / y[:,:,7:13] ** 2
+    numerator = (y[:,:,:,1] - pred_y) ** 2 * (1 - y[:,:,:,3]) / y[:,:,:,2] ** 2
     # prevent outliers from greatly affecting gradients
     #num_clipped = jnp.clip(numerator, min=0.0, max=10.) + 0.1*numerator
-    return jax.numpy.sum(numerator) / jax.numpy.sum(1 - y[:,:,13:19])
+    return jax.numpy.sum(numerator) / jax.numpy.sum(1 - y[:,:,:,3])
 
 @jax.jit
 def kl_loss(mu, logvar):
@@ -270,22 +274,6 @@ def kl_loss(mu, logvar):
     Calculate the reconstruction loss of the model.
     """
     return - 0.5 * jax.numpy.mean(1 + logvar - mu ** 2 - jax.numpy.exp(logvar))
-
-def generate_decoder_input(sequence):
-    """Calculate decoder input given a sequence."""
-    nfilts = 6
-    nfiltsp3 = 3 * nfilts + 1
-    nfiltsp4 = 4 * nfilts + 1
-    sequence_len = sequence.shape[1]
-    outseq = jnp.reshape(sequence[:, :, 0], (len(sequence), sequence_len, 1)) * 1.0
-
-    # tile for each wv
-    outseq_tiled = jnp.repeat(outseq, nfilts, axis=1)
-    outseq_wvs = jnp.reshape(sequence[:, :, nfiltsp3:nfiltsp4], (len(sequence), nfilts*sequence_len, 1)) * 1.0
-    outseq_filter_widths = jnp.reshape(sequence[:, :, nfiltsp4:], (len(sequence), nfilts*sequence_len, 1)) * 1.0
-    outseq_tiled = jnp.dstack((outseq_tiled, outseq_wvs, outseq_filter_widths))
-
-    return outseq_tiled
 
 @jax.jit
 def update_slices(carry, start_index):
@@ -299,43 +287,27 @@ def update_slices(carry, start_index):
     return (updated_data1, updated_data2, encoder_data, shuffled_idx1, shuffled_idx2), None
 
 @jax.jit
-def dataloader(encoder_data, ids, shuffle_key):
+def dataloader(encoder_data, encoder_mask, ids, shuffle_key):
     """Shuffle and load encoder and decoder arrays.
     Within this function we generate (1) pairs of samples with subsets
     of LCs from the same events to enforce our contrastive loss, 
     (2) shuffle bands randomly, and (3) generate decoder array from
     encoder array."""
-
-    if shuffle_key is None:
-        shuffled_idx1 = jnp.array([0,2,4,0,2,4])
-        shuffled_idx2 = jnp.array([1,3,5,1,3,5])
     
-    else:
-        dataset_size = encoder_data.shape[0]
-        indices = jnp.arange(dataset_size)
-        new_key, key = jax.random.split(shuffle_key)
-        perm = jax.random.permutation(key=key, x=indices)
-        shuffled_vals = jax.random.choice(key, 6, (6,), replace=False) # can be repeats
-        shuffled_idx1 = shuffled_vals[jnp.repeat(shuffled_vals[:3], 2)]
-        shuffled_idx2 = shuffled_vals[jnp.repeat(shuffled_vals[3:], 2)]
-
-    batch_split1 = jnp.array(encoder_data)
-    batch_split2 = jnp.array(encoder_data)
-
-    carry = (batch_split1, batch_split2, encoder_data, shuffled_idx1, shuffled_idx2)
-    carry, _ = jax.lax.scan(update_slices, carry, 6 * jnp.arange(5) + 1 )
-    (batch_split1, batch_split2, _, _, _) = carry
-    encoder_pairs = jnp.vstack((batch_split1, batch_split2))
-    decoder_data = generate_decoder_input(encoder_pairs)
+    dataset_size = len(encoder_data)
+    encoder_pairs = jnp.vstack((encoder_data, encoder_data))
+    encoder_mask_pairs = jnp.vstack((encoder_mask, encoder_mask))
     match_data = jnp.tile(ids, 2)
 
     if shuffle_key is None:
-        return encoder_pairs, decoder_data, match_data, None, None
+        return encoder_pairs, encoder_mask_pairs, match_data, None, None
     
+    new_key, key = jax.random.split(shuffle_key)
+    perm = jax.random.permutation(key=key, x=ids)
     perm_doubled = jnp.repeat(perm, 2)
-    even_idxs = jnp.arange(1,dataset_size, 2)
+    even_idxs = jnp.arange(1, dataset_size, 2)
     perm_doubled = perm_doubled.at[even_idxs].set(perm_doubled[even_idxs-1] + dataset_size) # makes sure pairs are summoned together
-    return encoder_pairs, decoder_data, match_data, perm_doubled, new_key
+    return encoder_pairs, encoder_mask_pairs, match_data, perm_doubled, new_key
 
 
 @partial(jax.jit, static_argnums=2)
@@ -344,7 +316,7 @@ def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
         model_params,
         opt_state,
         encoder_data,
-        decoder_data,
+        encoder_mask,
         matches,
         epoch
     ) = carry
@@ -362,7 +334,7 @@ def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
 
     (
         val_encoder_data,
-        val_decoder_data,
+        val_encoder_mask,
         val_matches,
     ) = statics_nonhashable
 
@@ -371,7 +343,7 @@ def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
     #opt_state = jax.tree_util.tree_unflatten(treedef_opt_state, flat_opt_state)
 
     encoder_batch = encoder_data[perm_idxs]
-    decoder_batch = decoder_data[perm_idxs]
+    mask_batch = encoder_mask[perm_idxs]
     matches_batch = matches[perm_idxs]
     model = eqx.combine(model_params, static_model)
 
@@ -385,11 +357,11 @@ def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
     """
         
     (loss, (rl, kl, cl)), grads = compute_loss(
-        model, epoch, encoder_batch, decoder_batch, matches_batch,
+        model, epoch, encoder_batch, mask_batch, matches_batch,
         include_reconstructive,include_kl,distance,temp
     )
     (val_loss, (val_rl, val_kl, val_cl)), _ = compute_loss(
-        model, epoch, val_encoder_data, val_decoder_data, val_matches,
+        model, epoch, val_encoder_data, val_encoder_mask, val_matches,
         include_reconstructive,include_kl,distance,temp
     )
     updates, update_opt_state = optim.update(grads, opt_state)
@@ -403,7 +375,7 @@ def make_step(carry, perm_idxs, statics_hashable, statics_nonhashable):
         update_model_params,
         update_opt_state,
         encoder_data,
-        decoder_data,
+        encoder_mask,
         matches,
         epoch
     )
@@ -414,10 +386,12 @@ def epoch_iterator(carry, epoch, statics_hashable, statics_nonhashable):
 
     # carry: (model, opt_state, key)
 
-    encoder_inputs, ids = statics_nonhashable[:2]
+    encoder_inputs, encoder_masks, ids = statics_nonhashable[:3]
     batch_size = statics_hashable[0]
 
-    encoder_data, decoder_data, matches, perm, new_key = dataloader(encoder_inputs, ids, carry[-1])
+    encoder_data, encoder_mask, matches, perm, new_key = dataloader(
+        encoder_inputs, encoder_masks, ids, carry[-1]
+    )
     
     perm_new_len = (len(encoder_data) // batch_size) * batch_size
     perm_reshaped = jnp.reshape(perm[:perm_new_len], shape=(-1,batch_size))
@@ -425,7 +399,7 @@ def epoch_iterator(carry, epoch, statics_hashable, statics_nonhashable):
     carry_init = (
         *carry[:-1],
         encoder_data, # generated in loop
-        decoder_data,
+        encoder_mask,
         matches,
         epoch,
     )
@@ -435,9 +409,10 @@ def epoch_iterator(carry, epoch, statics_hashable, statics_nonhashable):
     return A, jnp.mean(losses, axis=0)
 
 def fit_model(
-        model, encoder_inputs,
+        model,
+        encoder_inputs_ragged,
         ids,
-        val_encoder_inputs,
+        val_encoder_inputs_ragged,
         val_ids,
         learning_rate=1e-3,
         num_epochs=1000,
@@ -474,8 +449,42 @@ def fit_model(
     # convert ids to numerics
     _, ids = np.unique(ids, return_inverse=True)
     _, val_ids = np.unique(val_ids, return_inverse=True)
+    
+    # make train and val masks
+    max_num_filts = max([x.shape[0] for x in encoder_inputs_ragged])
+    max_num_val_filts = max([x.shape[0] for x in val_encoder_inputs_ragged])
+    max_num_filts = max(max_num_filts, max_num_val_filts)
+    max_num_val_t = max([x.shape[1] for x in val_encoder_inputs_ragged])
+    max_num_t = max([x.shape[1] for x in encoder_inputs_ragged])
+    max_num_t = max(max_num_t, max_num_val_t)
+    
+    print('mask shape', (max_num_filts, max_num_t))
+    
+    encoder_masks = jnp.zeros((len(encoder_inputs_ragged), max_num_filts+1), dtype=int)
+    encoder_inputs = jnp.zeros((len(encoder_inputs_ragged), max_num_filts, max_num_t, 6))
+    for i, x in enumerate(encoder_inputs_ragged):
+        encoder_masks = encoder_masks.at[i, :x.shape[0]].set(1)
+        encoder_masks = encoder_masks.at[i, -1].set(x.shape[1])
+        encoder_inputs = encoder_inputs.at[i, :x.shape[0], :x.shape[1]].set(x)
+        encoder_inputs = encoder_inputs.at[i, x.shape[0]:, :, 3].set(1)
+        encoder_inputs = encoder_inputs.at[i, :, x.shape[1]:, 3].set(1)
+            
+    val_encoder_masks = jnp.zeros(
+        (len(val_encoder_inputs_ragged), max_num_filts+1), dtype=int
+    )
+    val_encoder_inputs = jnp.zeros(
+        (len(val_encoder_inputs_ragged), max_num_filts, max_num_t, 6)
+    )
+    for i, x in enumerate(val_encoder_inputs_ragged):
+        val_encoder_masks = val_encoder_masks.at[i, :x.shape[0]].set(1)
+        val_encoder_masks = val_encoder_masks.at[i, -1].set(x.shape[1])
+        val_encoder_inputs = val_encoder_inputs.at[i, :x.shape[0], :x.shape[1]].set(x)
+        val_encoder_inputs = val_encoder_inputs.at[i, x.shape[0]:, :, 3].set(1)
+        val_encoder_inputs = val_encoder_inputs.at[i, :, x.shape[1]:, 3].set(1)
 
-    val_encoder_data, val_decoder_data, val_matches, _, _ = dataloader(val_encoder_inputs, val_ids, None)
+    val_encoder_data, val_encoder_mask, val_matches, _, _ = dataloader(
+        val_encoder_inputs, val_encoder_masks, val_ids, None
+    )
 
     if contrastive_params != 'None':
         assert "_" in contrastive_params
@@ -502,16 +511,17 @@ def fit_model(
     )
     statics_nonhashable = (
         encoder_inputs,
+        encoder_masks,
         ids,
         val_encoder_data,
-        val_decoder_data,
+        val_encoder_mask,
         val_matches,
     )
 
     make_step_partial = partial(
         make_step,
         statics_hashable=statics_hashable[1:],
-        statics_nonhashable=statics_nonhashable[2:]
+        statics_nonhashable=statics_nonhashable[3:]
     )
 
     A = (

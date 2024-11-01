@@ -10,8 +10,9 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update('jax_platform_name', 'cpu')
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-#jax.config.update('jax_disable_jit', True)
-jax.config.update("jax_explain_cache_misses", True)
+jax.config.update('jax_disable_jit', True)
+#jax.config.update("jax_explain_cache_misses", True)
+#jax.config.update("jax_debug_nans", True)
 
 os.environ['XLA_FLAGS'] = '--xla_cpu_enable_xprof_traceme'
 

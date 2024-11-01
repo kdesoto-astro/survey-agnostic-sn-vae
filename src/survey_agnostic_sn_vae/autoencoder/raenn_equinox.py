@@ -466,8 +466,8 @@ def fit_model(
         encoder_masks = encoder_masks.at[i, :x.shape[0]].set(1)
         encoder_masks = encoder_masks.at[i, -1].set(x.shape[1])
         encoder_inputs = encoder_inputs.at[i, :x.shape[0], :x.shape[1]].set(x)
-        encoder_inputs = encoder_inputs.at[i, x.shape[0]:, :, 3].set(1)
-        encoder_inputs = encoder_inputs.at[i, :, x.shape[1]:, 3].set(1)
+        encoder_inputs = encoder_inputs.at[i, x.shape[0]:, :, [2,3]].set(1)
+        encoder_inputs = encoder_inputs.at[i, :, x.shape[1]:, [2,3]].set(1)
             
     val_encoder_masks = jnp.zeros(
         (len(val_encoder_inputs_ragged), max_num_filts+1), dtype=int
@@ -479,8 +479,8 @@ def fit_model(
         val_encoder_masks = val_encoder_masks.at[i, :x.shape[0]].set(1)
         val_encoder_masks = val_encoder_masks.at[i, -1].set(x.shape[1])
         val_encoder_inputs = val_encoder_inputs.at[i, :x.shape[0], :x.shape[1]].set(x)
-        val_encoder_inputs = val_encoder_inputs.at[i, x.shape[0]:, :, 3].set(1)
-        val_encoder_inputs = val_encoder_inputs.at[i, :, x.shape[1]:, 3].set(1)
+        val_encoder_inputs = val_encoder_inputs.at[i, x.shape[0]:, :, [2,3]].set(1)
+        val_encoder_inputs = val_encoder_inputs.at[i, :, x.shape[1]:, [2,3]].set(1)
 
     val_encoder_data, val_encoder_mask, val_matches, _, _ = dataloader(
         val_encoder_inputs, val_encoder_masks, val_ids, None
